@@ -261,7 +261,7 @@ button:not(.justify-between) { text-justify: center; justify-content: center !im
   @media (prefers-reduced-motion: reduce) { #ebhaar-tooltip { transition: none; } }
 </style>
 
-</head>
+<style id="v16-css">#nav-chart-of-accounts,#nav-journal,#nav-manual-entries,#nav-acc-statement,#nav-surplus,#nav-surplus-movements,div.pt-2:has(> #sub-accounting){display:none !important}</style></head>
 <body class="min-h-screen flex flex-col bg-[#f7f4ef]">
 
   <!-- TOP APP BAR -->
@@ -12866,8 +12866,8 @@ function v10RebuildNav() {
     ['sub-purchases', '🛒 المشتريات والتجار', [mkAdd(addBtn.purchase), 'nav-purchases', 'nav-suppliers', 'nav-supplier-payments', 'nav-reserved-goods']],
     ['sub-surplus', '📦 المخزون والمنتجات', ['nav-master-products', 'nav-goods-places', 'nav-surplus', 'nav-surplus-movements']],
     ['sub-finance', '💰 المالية والخزينة', ['nav-treasury', 'nav-collections', 'nav-expenses', 'nav-workers', 'nav-financial-transactions', 'nav-company-position', 'nav-supply-analysis']],
-    ['sub-accounting', '🧾 المحاسبة والقيود', ['nav-chart-of-accounts', 'nav-journal', 'nav-manual-entries', 'nav-acc-statement', 'nav-rep-trial-balance', 'nav-rep-income', 'nav-rep-balance-sheet']],
-    ['sub-reports', '📊 التقارير', ['nav-reports-hub', 'nav-rep-summary', 'nav-profitability', 'nav-cost-analysis', 'nav-rep-op-liquidity', 'nav-rep-withdrawals', 'nav-rep-inventory', 'nav-rep-brand']],
+    ['sub-accounting', '🧾 المحاسبة والقيود', ['nav-chart-of-accounts', 'nav-journal', 'nav-manual-entries', 'nav-acc-statement']],
+    ['sub-reports', '📊 التقارير', ['nav-reports-hub', 'nav-rep-summary', 'nav-rep-trial-balance', 'nav-rep-income', 'nav-rep-balance-sheet', 'nav-profitability', 'nav-cost-analysis', 'nav-rep-op-liquidity', 'nav-rep-withdrawals', 'nav-rep-inventory', 'nav-rep-brand']],
     ['sub-system', '⚙️ النظام والإعدادات', ['nav-settings', backup, 'nav-equations', 'nav-audit-log', 'nav-trash', 'nav-about']]
   ];
   const wrapperOf = id => { const c = $(id); return c ? c.parentElement : null; };
@@ -14534,6 +14534,63 @@ function v13TransferSave(e) {
   document.addEventListener('pointerdown', () => hide(), true);
   window.addEventListener('scroll', () => { if (active) position(active); }, true);
   window.addEventListener('resize', () => { if (active) position(active); });
+})();
+
+// ============================================================
+// V16 — تبسيط الاستخدام: إخفاء الشجرة والقيود وفائض المواقع من الواجهة (تعمل من وراء الستار)،
+//        وصفحة «المخزون» الجديدة: لكل صنف مصدره (الفاتورة والمورد والتاريخ) ومكانه الحالي
+// لا تغيير في الحسابات أو شكل البيانات أو مفتاح التخزين.
+// ============================================================
+(function () {
+  // 1) فائض المواقع: تعطيل مرة واحدة فقط (يمكن إعادة تفعيله من «أماكن وجود البضاعة»)، والبيانات محفوظة
+  try {
+    if (state && state.settings) {
+      if (!state.settings.modules || typeof state.settings.modules !== 'object') state.settings.modules = { siteSurplus: true, merchantReserved: true };
+      if (!state.settings.v16Simplified) {
+        state.settings.modules.siteSurplus = false;
+        state.settings.v16Simplified = true;
+        if (typeof saveState === 'function') saveState();
+      }
+      if (typeof v7ApplyModules === 'function') v7ApplyModules();
+    }
+  } catch (e) { console.error('v16 modules', e); }
+
+  // 2) القائمة الجانبية: إخفاء الشجرة والقيود، ونقل التقارير المحاسبية لمجموعة التقارير
+  const $ = id => document.getElementById(id);
+
+  // 3) صفحة المخزون
+  const tagName = id => { try { return id ? v5TagName(id) : ''; } catch (e) { return ''; } };
+  const pName = id => (state.products.find(p => p.id === id) || { name: id || '' }).name;
+  window.v16StockFilter = '';
+  window.v16SetStockFilter = v => { window.v16StockFilter = v; refreshCurrentView(); };
+  V5_VIEWS['stock-list'] = function () {
+    const all = (state.surplus || []).filter(r => r.kind === 'stock' && r.status === 'available' && Number(r.qty) > 0);
+    const places = [...new Set(all.map(r => r.tagId || ('LOC:' + (r.location || 'بدون مكان'))))];
+    const label = k => k.startsWith('LOC:') ? k.slice(4) : tagName(k);
+    const f = window.v16StockFilter;
+    const rows = all.filter(r => !f || (r.tagId || ('LOC:' + (r.location || 'بدون مكان'))) === f);
+    const total = round2(rows.reduce((s, r) => s + Number(r.qty) * Number(r.originalCost || 0), 0));
+    const src = r => {
+      const pur = (state.purchases || []).find(p => p.id === r.sourcePurchaseId);
+      const sup = pur && pur.supplierId ? (state.suppliers.find(s => s.id === pur.supplierId) || {}).name : '';
+      const moved = (state.surplusMovements || []).some(m => m.surplusId === r.id && /نقل بين المخازن/.test(m.notes || ''));
+      return `<div class="font-bold text-stone-800">${escHtml(r.sourceInvoiceId || r.sourcePurchaseId || '—')}</div><div class="text-[10px] text-stone-500">${sup ? escHtml(sup) + ' · ' : ''}${escHtml(r.dateAdded || '')}${moved ? ' · تم نقله بين المخازن' : ''}</div>`;
+    };
+    const body = rows.map(r => `<tr class="hover:bg-stone-50"><td class="p-3 font-bold text-stone-900">${escHtml(pName(r.productId))}</td><td class="p-3 text-center font-bold">${r.qty}</td><td class="p-3"><span class="px-2 py-0.5 rounded-lg bg-sky-50 text-sky-800 font-bold">${escHtml(r.tagId ? tagName(r.tagId) : (r.location || 'بدون مكان'))}</span></td><td class="p-3">${src(r)}</td><td class="p-3 text-center">${formatMoney(r.originalCost)}</td><td class="p-3 font-bold">${formatMoney(round2(r.qty * r.originalCost))}</td></tr>`).join('');
+    return `<div class="space-y-4"><div class="flex items-center justify-between flex-wrap gap-2"><div><h2 class="text-xl font-bold text-stone-900">المخزون</h2><p class="text-xs text-stone-500">كل صنف في المخازن، ومكانه الحالي، ومن أي فاتورة جاء.</p></div>
+      <div class="flex gap-2 flex-wrap"><select onchange="v16SetStockFilter(this.value)" class="p-2 border border-stone-300 rounded-xl text-xs font-bold"><option value="">كل الأماكن</option>${places.map(k => `<option value="${escHtml(k)}" ${k === f ? 'selected' : ''}>${escHtml(label(k))}</option>`).join('')}</select>
+      <button onclick="v13OpenTransfer()" class="px-4 py-2 bg-deep-blue text-white rounded-xl text-xs font-bold">نقل بين المخازن</button></div></div>
+      <div class="bg-white rounded-2xl border border-stone-200 overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-right text-xs"><thead><tr class="bg-stone-100 text-stone-700 font-bold border-b border-stone-200"><th class="p-3">الصنف</th><th class="p-3 text-center">الكمية</th><th class="p-3">المكان</th><th class="p-3">المصدر (الفاتورة / المورد)</th><th class="p-3 text-center">التكلفة</th><th class="p-3">القيمة</th></tr></thead>
+      <tbody class="divide-y divide-stone-100">${body || '<tr><td colspan="6" class="p-6 text-center text-stone-400">لا توجد بضاعة في المخازن.</td></tr>'}</tbody>
+      <tfoot><tr class="bg-stone-50 font-black"><td class="p-3" colspan="5">الإجمالي</td><td class="p-3">${formatMoney(total)}</td></tr></tfoot></table></div></div></div>`;
+  };
+  const sub = $('sub-surplus');
+  if (sub && !$('nav-stock-list')) {
+    const b = document.createElement('button'); b.id = 'nav-stock-list';
+    b.className = 'nav-btn w-full text-right px-3 py-2 text-xs text-deep-blue font-bold hover:bg-stone-200/80 rounded-lg';
+    b.setAttribute('onclick', "navigateTo('stock-list')"); b.textContent = 'المخزون ومصدر كل صنف';
+    sub.insertBefore(b, sub.firstChild);
+  }
 })();
 </script>
 
