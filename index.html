@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
-<head>
+<head><link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#1e3a5f"><link rel="icon" href="icon-192.png"><link rel="apple-touch-icon" href="icon-192.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>إدارة تركيبات المصاعد</title>
@@ -261,7 +261,7 @@ button:not(.justify-between) { text-justify: center; justify-content: center !im
   @media (prefers-reduced-motion: reduce) { #ebhaar-tooltip { transition: none; } }
 </style>
 
-<style id="v16-css">#nav-chart-of-accounts,#nav-journal,#nav-manual-entries,#nav-acc-statement,#nav-surplus,#nav-surplus-movements,div.pt-2:has(> #sub-accounting){display:none !important}</style></head>
+<style id="v16-css">#nav-chart-of-accounts,#nav-journal,#nav-manual-entries,#nav-acc-statement,div.pt-2:has(> #sub-accounting){display:none !important}</style></head>
 <body class="min-h-screen flex flex-col bg-[#f7f4ef]">
 
   <!-- TOP APP BAR -->
@@ -12972,7 +12972,7 @@ function v10AddRow(dest) {
       <select data-f="phase" class="w-full p-2 border border-stone-300 rounded-lg">${V10_PHASES.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</select>
       <select data-f="tag" data-v5tag="1" data-v7mode="" onchange="v5TagSelectChanged(this)" class="hidden w-full p-2 border border-stone-300 rounded-lg">${v5TagOptionsHtml('')}</select>
     </div>
-    <div class="col-span-2"><select data-f="prod" onchange="v10ProdChanged(${n})" class="w-full p-2 border border-stone-300 rounded-lg"><option value="">-- الصنف --</option>${state.products.map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join('')}</select><div data-f="warn" class="text-[10px] text-amber-700 font-bold mt-0.5"></div></div>
+    <div class="col-span-2"><select data-f="prod" onchange="v10ProdChanged(${n})" class="w-full p-2 border border-stone-300 rounded-lg"><option value="">-- الصنف --</option><option value="__new__">＋ صنف جديد…</option>${state.products.map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join('')}</select><div data-f="warn" class="text-[10px] text-amber-700 font-bold mt-0.5"></div></div>
     <input data-f="brand" list="v10BrandList" placeholder="Brand" class="md:col-span-1 p-2 border border-stone-300 rounded-lg">
     <input data-f="section" list="v10SectionList" placeholder="القسم" class="md:col-span-1 p-2 border border-stone-300 rounded-lg">
     <input data-f="qty" type="number" step="any" min="0" placeholder="الكمية" oninput="v10Calc(${n})" class="md:col-span-1 p-2 border border-stone-300 rounded-lg">
@@ -14592,6 +14592,920 @@ function v13TransferSave(e) {
     sub.insertBefore(b, sub.firstChild);
   }
 })();
+
+// ============================================================
+// V17 — 1) إضافة صنف جديد من داخل فاتورة الشراء بدون ما تخسر الفاتورة
+//        2) روابط حقيقية في القائمة الجانبية: كليك يمين ← فتح في صفحة/تبويب جديد (والعنوان يتذكر الصفحة)
+//        3) سلامة تعدد الصفحات: لو اتحفظ تغيير من صفحة تانية، الصفحة القديمة تتحدّث (أو تتوقف عن الحفظ لحد ما تحدّثها) فلا تمسح شغلك
+//        4) المسودات: أي نموذج مفتوح وفيه كتابة غير محفوظة يتحول لمسودة بعد دقيقة بدون تعديل، أو عند الإلغاء/الإغلاق، وتظهر في زر «المسودات»
+// لا تغيير في الحسابات أو شكل البيانات أو مفتاح التخزين. المسودات في مفتاح منفصل على نفس الجهاز.
+// ============================================================
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // ---------- 1) صنف جديد من داخل سطر الفاتورة ----------
+  if (typeof v10ProdChanged === 'function') {
+    const origProd = v10ProdChanged;
+    v10ProdChanged = function (n) {
+      const div = v10Row(n); if (!div) return origProd.apply(this, arguments);
+      const sel = v10F(div, 'prod');
+      if (sel && sel.value === '__new__') {
+        sel.value = '';
+        v5OpenNewProductSub('', prod => {
+          document.querySelectorAll('#v10Rows [data-f="prod"]').forEach(s => {
+            if ([...s.options].some(o => o.value === prod.id)) return;
+            const o = document.createElement('option'); o.value = prod.id; o.textContent = prod.name;
+            s.insertBefore(o, s.options[1] || null);
+          });
+          sel.value = prod.id; origProd(n);
+        });
+        return;
+      }
+      return origProd.apply(this, arguments);
+    };
+  }
+
+  // ---------- 2) روابط حقيقية + عنوان الصفحة ----------
+  const hashView = () => { const m = /^#\/([\w-]+)/.exec(location.hash); return m ? m[1] : null; };
+  const origNav = navigateTo;
+  navigateTo = function (view) {
+    const r = origNav.apply(this, arguments); remember(view);
+    try { if (hashView() !== view) history.pushState(null, '', '#/' + view); } catch (e) { try { location.hash = '#/' + view; } catch (e2) { } }
+    return r;
+  };
+  const LV = 'EBHAAR_LAST_VIEW';
+  const remember = v => { try { localStorage.setItem(LV, v); } catch (e) { } };
+  const validView = v => !!(v && (document.getElementById('nav-' + v) || (typeof V5_VIEWS !== 'undefined' && V5_VIEWS[v]) || v === 'dashboard'));
+  const closeOpen = () => { try { const m = $('modalContainer'); if (m && m.firstElementChild) closeModal(); } catch (e) { } try { const s = $('subModalContainer'); if (s && s.firstElementChild && typeof v5CloseSub === 'function') v5CloseSub(); } catch (e) { } };
+  const onNav = () => { let v = hashView() || 'dashboard'; if (!validView(v)) v = 'dashboard'; if (v !== currentView) { closeOpen(); try { origNav(v); remember(v); } catch (e) { } } };
+  window.addEventListener('popstate', onNav);
+  window.addEventListener('hashchange', onNav);
+  function linkify() {
+    document.querySelectorAll('button.nav-btn[onclick]').forEach(b => {
+      const m = /^\s*navigateTo\('([\w-]+)'\)\s*;?\s*$/.exec(b.getAttribute('onclick') || ''); if (!m) return;
+      const a = document.createElement('a');
+      [...b.attributes].forEach(at => { if (at.name !== 'onclick' && at.name !== 'type') a.setAttribute(at.name, at.value); });
+      a.href = '#/' + m[1]; a.innerHTML = b.innerHTML;
+      a.addEventListener('click', ev => { if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey || ev.button === 1) return; ev.preventDefault(); navigateTo(m[1]); });
+      b.replaceWith(a);
+    });
+  }
+  const st = document.createElement('style'); st.id = 'v17-css';
+  st.textContent = 'a.nav-btn{display:inline-block;text-decoration:none;cursor:pointer} #v17Banner{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:9999;background:#7c2d12;color:#fff;padding:10px 14px;border-radius:12px;font-size:13px;font-weight:700;max-width:92vw;box-shadow:0 8px 24px rgba(0,0,0,.3);display:flex;gap:10px;align-items:center;flex-wrap:wrap} #v17Banner button{background:#fff;color:#7c2d12;border:0;border-radius:8px;padding:5px 12px;font-weight:800;cursor:pointer} #v17Drafts{position:relative} #v17Drafts b{position:absolute;top:-4px;inset-inline-start:-4px;background:#d97706;color:#fff;border-radius:999px;font-size:10px;min-width:16px;height:16px;line-height:16px;text-align:center}';
+  document.head.appendChild(st);
+  linkify();
+  const sb = $('mainSidebar') || document.body; let lt = null;
+  new MutationObserver(() => { clearTimeout(lt); lt = setTimeout(linkify, 150); }).observe(sb, { childList: true, subtree: true });
+  { const go = () => { let v = hashView(); if (v && !validView(v)) v = null; if (!v) { let l = null; try { l = localStorage.getItem(LV); } catch (e) { } v = validView(l) ? l : 'dashboard'; try { history.replaceState(null, '', '#/' + v); } catch (e) { } } if (v !== currentView) { try { origNav(v); remember(v); } catch (e) { } } };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(go, 0)); else go(); }
+
+  // ---------- 3) سلامة تعدد الصفحات ----------
+  const KEY = (typeof EBHAAR_STATE_KEY !== 'undefined') ? EBHAAR_STATE_KEY : 'EBHAAR_SYSTEM_STATE_V4_FINAL';
+  let stale = false;
+  const osSet = EBHAAR_STORE.set;
+  EBHAAR_STORE.set = function (j) { if (stale) return; return osSet.apply(this, arguments); };
+  const modalOpen = () => { const m = $('modalContainer'), s = $('subModalContainer'); return !!((m && m.firstElementChild) || (s && s.firstElementChild)); };
+  function banner(msg) {
+    let b = $('v17Banner'); if (!b) { b = document.createElement('div'); b.id = 'v17Banner'; document.body.appendChild(b); }
+    b.innerHTML = '<span>' + esc(msg) + '</span><button onclick="location.reload()">تحديث الآن</button>';
+  }
+  window.addEventListener('storage', e => {
+    if (e.storageArea !== localStorage || e.key !== KEY || e.newValue === e.oldValue) return;
+    let last = 0; try { last = Number(sessionStorage.getItem('v17_auto') || 0); } catch (x) { }
+    if (!modalOpen() && Date.now() - last > 6000) {
+      stale = true;   // لا نحفظ فوق تغييرات الصفحة الأخرى
+      setTimeout(() => { if (!modalOpen()) { try { sessionStorage.setItem('v17_auto', String(Date.now())); } catch (x) { } location.reload(); } else banner('تم حفظ تغييرات من صفحة أخرى. الحفظ متوقف هنا لحد ما تحدّث الصفحة (نموذجك هيتحفظ كمسودة).'); }, 2500);
+    } else { stale = true; banner('تم حفظ تغييرات من صفحة أخرى. الحفظ متوقف هنا لحد ما تحدّث الصفحة (نموذجك هيتحفظ كمسودة).'); }
+  });
+
+  // ---------- 4) المسودات ----------
+  const DK = 'EBHAAR_DRAFTS_V1';
+  const IDLE = () => Number(window.__V17_IDLE_MS || 60000);
+  const rd = () => { try { const a = JSON.parse(localStorage.getItem(DK) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+  const wr = a => { try { localStorage.setItem(DK, JSON.stringify(a.slice(0, 20))); } catch (e) { } badge(); };
+  let cur = null, dirty = false, timer = null, sid = null, depth = 0, lastSuccess = 0, seq = 0;
+  const mcEl = () => $('modalContainer');
+  const safe = args => { const out = []; for (const x of args) { if (x === null || ['string', 'number', 'boolean'].includes(typeof x)) out.push(x); else if (x === undefined) out.push(null); else return null; } return out; };
+  function snapshot() {
+    const mc = mcEl(); if (!mc || !cur) return null;
+    const f = [...mc.querySelectorAll('input,select,textarea')].filter(c => !['password', 'file', 'button', 'submit', 'hidden', 'reset'].includes(c.type)).map(c => ({ t: c.tagName + ':' + (c.type || ''), v: (c.type === 'checkbox' || c.type === 'radio') ? c.checked : c.value }));
+    const h = mc.querySelector('h1,h2,h3,h4'); const rows = document.querySelectorAll('#v10Rows .v10row').length;
+    return { id: sid || ('D' + Date.now() + '-' + (++seq)), opener: cur.name, args: cur.args, title: (h ? h.textContent : cur.name).trim().slice(0, 80), at: new Date().toISOString(), rows, f };
+  }
+  function saveDraft(sn) {
+    if (!sn) return; sid = sn.id;
+    const a = rd().filter(d => d.id !== sn.id); a.unshift(sn); wr(a);
+  }
+  function dropDraft(id) { if (!id) return; wr(rd().filter(d => d.id !== id)); }
+  function resetSession() { dirty = false; clearTimeout(timer); sid = null; }
+  function finalize(sn, closedAt) {
+    if (!sn) return;
+    setTimeout(() => { if (lastSuccess >= closedAt - 1500) dropDraft(sn.id); else saveDraft(sn); }, 900);
+  }
+  const origNotify = notifyUser;
+  notifyUser = function (m, t) { if (t === 'success') lastSuccess = Date.now(); return origNotify.apply(this, arguments); };
+  // تتبع الفتح
+  Object.getOwnPropertyNames(window).filter(n => /^(open[A-Z]\w*|v\d+Open\w*)$/.test(n) && !/Sub|Over|Draft/.test(n) && typeof window[n] === 'function').forEach(n => {
+    const o = window[n];
+    window[n] = function () {
+      const top = depth === 0; let pre = null;
+      if (top && dirty && cur) pre = snapshot();
+      depth++; let r; try { r = o.apply(this, arguments); } finally { depth--; }
+      if (top) {
+        if (pre) { finalize(pre, Date.now()); resetSession(); }
+        const mc = mcEl();
+        if (mc && mc.querySelector('form')) { const a = safe([...arguments]); cur = a ? { name: n, args: a } : null; if (!pre) resetSession(); dirty = false; }
+      }
+      return r;
+    };
+  });
+  const origClose = closeModal;
+  closeModal = function () {
+    const sn = (dirty && cur) ? snapshot() : null;
+    const r = origClose.apply(this, arguments);
+    if (sn) finalize(sn, Date.now());
+    resetSession(); cur = null; return r;
+  };
+  const mc0 = mcEl();
+  if (mc0) {
+    const onEdit = ev => {
+      if (!cur || !ev.target || !ev.target.closest || !ev.target.closest('form') || ev.target.type === 'password') return;
+      dirty = true; clearTimeout(timer); timer = setTimeout(() => { if (dirty && cur) saveDraft(snapshot()); }, IDLE());
+    };
+    mc0.addEventListener('input', onEdit, true); mc0.addEventListener('change', onEdit, true);
+  }
+  const flushDraft = () => { if (dirty && cur) saveDraft(snapshot()); };
+  window.addEventListener('pagehide', flushDraft);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushDraft(); });
+
+  window.v17DraftRestore = function (id) {
+    const d = rd().find(x => x.id === id); if (!d) return;
+    const fn = window[d.opener]; if (typeof fn !== 'function') { failValidation('تعذّر فتح هذا النموذج.'); return; }
+    try { v5CloseSub(); } catch (e) { }
+    try { fn.apply(null, d.args || []); } catch (e) { failValidation('تعذّر استرجاع المسودة: السجل الأصلي لم يعد موجودًا.'); return; }
+    const mc = mcEl(); if (!mc) return;
+    let g = 0; while (d.rows && document.querySelectorAll('#v10Rows .v10row').length < d.rows && g++ < 60 && typeof v10AddRow === 'function') v10AddRow();
+    const cs = [...mc.querySelectorAll('input,select,textarea')].filter(c => !['password', 'file', 'button', 'submit', 'hidden', 'reset'].includes(c.type));
+    cs.forEach((c, i) => {
+      const s = d.f[i]; if (!s || s.t !== c.tagName + ':' + (c.type || '')) return;
+      if (c.type === 'checkbox' || c.type === 'radio') { c.checked = !!s.v; }
+      else if (c.tagName === 'SELECT') { if (![...c.options].some(o => o.value === s.v)) return; c.value = s.v; }
+      else c.value = s.v;
+      c.dispatchEvent(new Event('input', { bubbles: true })); c.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    dropDraft(id); sid = null; dirty = true;
+    notifyUser('تم استرجاع المسودة — راجعها واحفظ', 'info');
+  };
+  window.v17DraftDelete = function (id) { dropDraft(id); window.v17OpenDrafts(); };
+  window.v17OpenDrafts = function () {
+    const a = rd();
+    const fmt = iso => { try { return new Date(iso).toLocaleString('ar-EG'); } catch (e) { return iso; } };
+    v5OpenSub('المسودات (' + a.length + ')', a.length ? '<div class="space-y-2">' + a.map(d => `<div class="flex items-center justify-between gap-2 p-3 border border-stone-200 rounded-xl bg-stone-50"><div class="min-w-0"><div class="font-bold text-stone-800 truncate">${esc(d.title)}</div><div class="text-[10px] text-stone-500">${esc(fmt(d.at))}</div></div><div class="flex gap-1.5 shrink-0"><button type="button" onclick="v17DraftRestore('${esc(d.id)}')" class="px-3 py-1.5 bg-deep-blue text-white rounded-lg font-bold">استرجاع</button><button type="button" onclick="v17DraftDelete('${esc(d.id)}')" class="px-3 py-1.5 bg-rose-50 text-rose-700 rounded-lg font-bold">حذف</button></div></div>`).join('') + '</div><p class="text-[10px] text-stone-400 mt-3">المسودات محفوظة على هذا الجهاز فقط ولا تدخل في الحسابات.</p>' : '<p class="text-stone-500">لا توجد مسودات.</p>', 'max-w-lg');
+  };
+  function badge() {
+    const n = rd().length; let b = $('v17Drafts');
+    if (!n) { if (b) b.remove(); return; }
+    if (!b) {
+      const host = $('hdActions'); if (!host) return;
+      b = document.createElement('button'); b.id = 'v17Drafts'; b.type = 'button'; b.title = 'المسودات'; b.className = host.querySelector('button') ? host.querySelector('button').className : 'px-2 py-1 text-xs font-bold';
+      b.textContent = '📝'; b.onclick = () => window.v17OpenDrafts(); host.insertBefore(b, host.firstChild);
+    }
+    b.innerHTML = '📝<b>' + n + '</b>';
+  }
+  badge(); setTimeout(badge, 1500);
+  if (rd().length) setTimeout(() => { try { notifyUser('عندك ' + rd().length + ' مسودة غير محفوظة — من زر 📝 في أعلى الصفحة', 'info', 6000); } catch (e) { } }, 1200);
+  // أمان: تسجيل الخروج يمسح المسودات من الجهاز
+  if (window.EBHAAR_CLOUD && EBHAAR_CLOUD.logout) { const ol = EBHAAR_CLOUD.logout; EBHAAR_CLOUD.logout = function () { try { localStorage.removeItem(DK); } catch (e) { } return ol.apply(this, arguments); }; }
+})();
+
+// ============================================================
+// V18 — ميزات التسهيل:
+//   1) تصدير الصفحة الحالية إلى Excel (أو CSV لو الإنترنت مش متاح) + طباعة / حفظ PDF
+//   2) كشف حساب للعميل والمورد: طباعة / PDF / واتساب / نسخ
+//   3) بحث سريع شامل (Ctrl+K أو زر 🔍)
+//   4) زر «تكرار» للفواتير والمصروفات والتحصيلات والدفعات
+//   5) جدول دفعات العقد + تنبيه المتأخر والقريب
+//   6) المصروفات المتكررة (إيجار / مرتبات ...) بضغطة كل شهر
+// لا تغيير في الحسابات أو القيود أو مفتاح التخزين. الحقول الجديدة اختيارية:
+//   contract.paymentSchedule  و  settings.recurringExpenses
+// ============================================================
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const ymNow = () => today().slice(0, 7);
+  const fm = v => formatMoney(round2(v));
+  const nrm = s => { try { return v5NormTag(String(s == null ? '' : s)); } catch (e) { return String(s || '').toLowerCase(); } };
+  const custName = id => (state.customers.find(c => c.id === id) || {}).name || '';
+  const BTN = 'px-3 py-1.5 rounded-lg font-bold text-xs';
+
+  const css = document.createElement('style'); css.id = 'v18-css';
+  css.textContent = `
+  #v18Doc{position:fixed;inset:0;z-index:90;background:#f4f1ec;overflow:auto}
+  #v18Doc .v18-bar{position:sticky;top:0;background:#1f3a5f;color:#fff;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;z-index:2}
+  #v18Doc .v18-bar button{background:#fff;color:#1f3a5f;border:0;border-radius:8px;padding:6px 12px;font-weight:800;font-size:12px;cursor:pointer}
+  #v18Doc .v18-paper{background:#fff;max-width:820px;margin:14px auto;padding:26px;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.12);color:#1c1917;font-size:13px}
+  #v18Doc table{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px}
+  #v18Doc th,#v18Doc td{border:1px solid #d6d3d1;padding:6px 8px;text-align:right}
+  #v18Doc th{background:#f5f5f4}
+  #v18Doc .v18-sum{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  #v18Doc .v18-sum div{flex:1 1 150px;border:1px solid #d6d3d1;border-radius:10px;padding:8px 10px}
+  #v18Doc .v18-sum b{display:block;font-size:15px;margin-top:2px}
+  .v18-sr{padding:9px 12px;border-bottom:1px solid #eee;cursor:pointer;display:flex;gap:10px;align-items:center}
+  .v18-sr:hover,.v18-sr.on{background:#eef4ff}
+  .v18-sr small{color:#78716c}
+  .v18-tag{font-size:10px;background:#e0e7ff;color:#3730a3;border-radius:6px;padding:1px 6px;font-weight:800;flex-shrink:0}
+  @media print{
+    html,body{height:auto!important;min-height:0!important;overflow:visible!important;display:block!important;background:#fff!important}
+    body>*:not(#v18Doc):not(#v19Rep){display:none!important}
+    #v18Doc{position:static!important;overflow:visible!important;background:#fff!important}
+    #v18Doc .v18-bar{display:none!important}
+    #v18Doc .v18-paper{box-shadow:none!important;margin:0!important;max-width:none!important;padding:0!important}
+    body.v18-printing-page>*:not(#mainWrapperPrint){}
+  }
+  @media print{
+    body.v18-pg aside,body.v18-pg header,body.v18-pg #mainSidebar,body.v18-pg .no-print,body.v18-pg #v17Banner,body.v18-pg #toastContainer{display:none!important}
+    body.v18-pg main,body.v18-pg #mainContentArea{margin:0!important;padding:0!important;width:100%!important;max-width:none!important;overflow:visible!important}
+    body.v18-pg button{display:none!important}
+    body.v18-pg{background:#fff!important}
+  }`;
+  document.head.appendChild(css);
+
+  // ---------- واتساب ----------
+  function waLink(phone, text) {
+    let d = String(phone || '').replace(/[^\d]/g, '');
+    if (d.startsWith('00')) d = d.slice(2); else if (d.startsWith('0')) d = '20' + d.slice(1);
+    return 'https://wa.me/' + d + '?text=' + encodeURIComponent(text);
+  }
+  window.v18Wa = function (phone, text) { window.open(waLink(phone, text), '_blank', 'noopener'); };
+
+  // ---------- 1) تصدير الصفحة ----------
+  function pageTables() { return [...document.querySelectorAll('#mainContentArea table')]; }
+  function cellText(c) {
+    const k = c.cloneNode(true); k.querySelectorAll('button,svg,i,script,style,select,input').forEach(x => x.remove());
+    return k.textContent.replace(/\s+/g, ' ').trim();
+  }
+  function cellVal(t) {
+    const m = /^(-?[\d,]+(?:\.\d+)?)(?:\s*[A-Za-z]{3})?$/.exec(t);
+    if (m && /\d/.test(m[1])) { const n = Number(m[1].replace(/,/g, '')); if (Number.isFinite(n) && !/^0\d/.test(m[1])) return n; }
+    return t;
+  }
+  function tableAOA(tb) {
+    const rows = [...tb.querySelectorAll('tr')].filter(r => r.style.display !== 'none');
+    let aoa = rows.map(r => [...r.children].map(c => cellText(c)));
+    // احذف الأعمدة اللي كلها فاضية (أزرار الإجراءات)
+    const w = Math.max(0, ...aoa.map(r => r.length));
+    const keep = []; for (let i = 0; i < w; i++) if (aoa.some(r => (r[i] || '') !== '')) keep.push(i);
+    aoa = aoa.map(r => keep.map(i => r[i] === undefined ? '' : r[i]));
+    return aoa.filter(r => r.some(x => x !== '')).map((r, ri) => ri === 0 ? r : r.map(cellVal));
+  }
+  function tableTitle(tb, i) {
+    let el = tb; for (let n = 0; n < 6 && el; n++, el = el.parentElement) { const h = el.querySelector && el.querySelector('h1,h2,h3'); if (h && h.textContent.trim()) return h.textContent.trim(); }
+    return 'جدول ' + (i + 1);
+  }
+  function pageTitle() { const h = document.querySelector('#mainContentArea h1,#mainContentArea h2'); return (h ? h.textContent : (typeof currentView === 'string' ? currentView : 'تقرير')).replace(/[\\/:*?"\[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || 'تقرير'; }
+  function download(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800); }
+  function csvOf(tabs) {
+    const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    return '﻿' + tabs.map(t => (tabs.length > 1 ? q(t.name) + '\r\n' : '') + t.aoa.map(r => r.map(q).join(',')).join('\r\n')).join('\r\n\r\n');
+  }
+  function loadXlsx() {
+    return new Promise((res, rej) => {
+      if (window.XLSX) return res(window.XLSX);
+      const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      const to = setTimeout(() => rej(new Error('timeout')), 8000);
+      s.onload = () => { clearTimeout(to); window.XLSX ? res(window.XLSX) : rej(new Error('no xlsx')); }; s.onerror = () => { clearTimeout(to); rej(new Error('load')); };
+      document.head.appendChild(s);
+    });
+  }
+  window.v18ExportExcel = async function () {
+    const tbs = pageTables();
+    if (!tbs.length) { notifyUser('مفيش جداول في الصفحة دي للتصدير.', 'info'); return; }
+    const used = {}; const tabs = tbs.map((t, i) => { let n = tableTitle(t, i).replace(/[\\/:*?"\[\]]/g, ' ').slice(0, 28) || 'جدول'; if (used[n]) n = n.slice(0, 25) + ' ' + (++used[n]); else used[n] = 1; return { name: n, aoa: tableAOA(t) }; }).filter(t => t.aoa.length);
+    if (!tabs.length) { notifyUser('الجداول فاضية.', 'info'); return; }
+    const base = pageTitle() + ' ' + today();
+    try {
+      const X = await loadXlsx(); const wb = X.utils.book_new();
+      tabs.forEach(t => { const ws = X.utils.aoa_to_sheet(t.aoa); ws['!cols'] = t.aoa[0].map((_, ci) => ({ wch: Math.min(40, Math.max(8, ...t.aoa.map(r => String(r[ci] == null ? '' : r[ci]).length + 2))) })); ws['!views'] = [{ rightToLeft: true }]; X.utils.book_append_sheet(wb, ws, t.name); });
+      wb.Workbook = { Views: [{ RTL: true }] };
+      X.writeFile(wb, base + '.xlsx'); notifyUser('تم تنزيل ملف Excel.', 'success');
+    } catch (e) {
+      download(new Blob([csvOf(tabs)], { type: 'text/csv;charset=utf-8' }), base + '.csv');
+      notifyUser('مفيش اتصال بالإنترنت لتجهيز Excel، فنزّلت الملف بصيغة CSV (بيفتح في Excel عادي).', 'info', 6000);
+    }
+  };
+  window.v18PrintPage = function () { document.body.classList.add('v18-pg'); const off = () => { document.body.classList.remove('v18-pg'); window.removeEventListener('afterprint', off); }; window.addEventListener('afterprint', off); setTimeout(() => window.print(), 50); };
+  window.v18TableAOA = tableAOA; window.v18Csv = csvOf;
+
+  // ---------- 2) كشوف الحساب ----------
+  function openDoc(title, bodyHtml, extra) {
+    let d = $('v18Doc'); if (d) d.remove();
+    d = document.createElement('div'); d.id = 'v18Doc'; d.dir = 'rtl';
+    d.innerHTML = `<div class="v18-bar"><b style="flex:1">${esc(title)}</b>${extra || ''}<button onclick="window.print()">🖨 طباعة / PDF</button><button onclick="document.getElementById('v18Doc').remove()">✕ إغلاق</button></div><div class="v18-paper">${bodyHtml}</div>`;
+    document.body.appendChild(d);
+  }
+  function stmtHtml(kind, party, rows, sums) {
+    const co = (state.settings && state.settings.general && state.settings.general.companyName) || '';
+    return `<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><div style="font-size:18px;font-weight:900">${esc(co)}</div><div style="font-weight:800;margin-top:2px">كشف حساب ${kind === 'c' ? 'عميل' : 'مورد'}</div></div><div style="text-align:left"><div>تاريخ الكشف: <bdi dir="ltr">${today()}</bdi></div></div></div>
+      <div style="margin-top:12px;padding:8px 10px;background:#f5f5f4;border-radius:8px"><b>${esc(party.name)}</b>${party.phone ? ' — ' + esc(party.phone) : ''}</div>
+      <table><thead><tr><th>التاريخ</th><th>البيان</th><th>${kind === 'c' ? 'عقود / مستحق' : 'فواتير آجلة'}</th><th>${kind === 'c' ? 'تحصيل' : 'دفعات'}</th><th>الرصيد</th></tr></thead><tbody>
+      ${rows.length ? rows.map(r => `<tr><td>${esc(r.date)}</td><td>${esc(r.desc)}</td><td>${r.d ? fm(r.d) : ''}</td><td>${r.c ? fm(r.c) : ''}</td><td><b>${fm(r.bal)}</b></td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:#78716c">لا توجد حركات</td></tr>'}
+      </tbody></table><div class="v18-sum">${sums.map(s => `<div>${esc(s[0])}<b>${esc(s[1])}</b></div>`).join('')}</div>`;
+  }
+  function custModel(id) {
+    const cu = state.customers.find(c => c.id === id); if (!cu) return null;
+    const ev = [];
+    state.contracts.filter(c => c.customerId === id).forEach(c => { const op = state.operations.find(o => o.contractId === c.id); ev.push({ date: c.date || '', o: 0, id: c.id, desc: 'عقد ' + c.id + (op ? ' — عملية ' + op.code : '') + (c.type ? ' (' + c.type + ')' : ''), d: Number(c.value || 0), c: 0 }); });
+    state.collections.filter(c => c.customerId === id).forEach(c => ev.push({ date: c.date || '', o: 1, id: c.id, desc: 'تحصيل ' + c.id + (c.notes ? ' — ' + c.notes : ''), d: 0, c: Number(c.amount || 0) }));
+    ev.sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.o - b.o || String(a.id).localeCompare(String(b.id)));
+    let bal = 0; ev.forEach(r => { bal = round2(bal + r.d - r.c); r.bal = bal; });
+    const b = getCustomerBalance(id);
+    const sums = [['إجمالي العقود', fm(b.invoicesTotal)], ['إجمالي المحصّل', fm(b.collected)], ['المتبقي على العميل', fm(b.due)]];
+    if (b.advance > 0.004) sums.push(['رصيد مقدم للعميل', fm(b.advance)]);
+    const wa = 'السلام عليكم ' + cu.name + '\nكشف حساب ' + ((state.settings.general || {}).companyName || '') + ' بتاريخ ' + today() + ':\n' + sums.map(s => '• ' + s[0] + ': ' + s[1]).join('\n') + (b.invoices.filter(i => i.remaining > 0.004).length ? '\n\nالعقود المتبقي عليها:\n' + b.invoices.filter(i => i.remaining > 0.004).map(i => '- ' + i.key + ': ' + fm(i.remaining)).join('\n') : '') + '\n\nشكرًا لحضرتك.';
+    return { kind: 'c', party: { name: cu.name, phone: cu.phone || '' }, rows: ev, sums, wa };
+  }
+  function suppModel(id) {
+    const su = state.suppliers.find(s => s.id === id); if (!su) return null;
+    const ev = [];
+    const inv = {}; state.purchases.filter(p => p.supplierId === id && p.paymentType === 'credit').forEach(p => { const k = purchaseInvoiceKey(p); const o = inv[k] || (inv[k] = { date: p.date || '', total: 0, n: 0 }); o.total = round2(o.total + Number(p.totalCost || 0)); o.n++; if (p.date && p.date < o.date) o.date = p.date; });
+    Object.keys(inv).forEach(k => ev.push({ date: inv[k].date, o: 0, id: k, desc: 'فاتورة ' + k + ' (' + inv[k].n + ' بند)', d: inv[k].total, c: 0 }));
+    state.supplierPayments.filter(sp => sp.supplierId === id).forEach(sp => ev.push({ date: sp.date || '', o: 1, id: sp.id, desc: 'دفعة ' + sp.id + (sp.notes ? ' — ' + sp.notes : ''), d: 0, c: Number(sp.amount || 0) }));
+    ev.sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.o - b.o || String(a.id).localeCompare(String(b.id)));
+    let bal = 0; ev.forEach(r => { bal = round2(bal + r.d - r.c); r.bal = bal; });
+    const b = getSupplierBalance(id);
+    const sums = [['إجمالي الفواتير الآجلة', fm(b.creditTotal)], ['إجمالي الدفعات', fm(b.paidTotal)], ['المستحق للمورد', fm(b.due)]];
+    if (b.advance > 0.004) sums.push(['رصيد مقدم لدى المورد', fm(b.advance)]);
+    if (b.cashTotal > 0) sums.push(['مشتريات نقدية (لا تدخل في الرصيد)', fm(b.cashTotal)]);
+    const wa = 'السلام عليكم ' + su.name + '\nكشف حسابك لدى ' + ((state.settings.general || {}).companyName || '') + ' بتاريخ ' + today() + ':\n' + sums.map(s => '• ' + s[0] + ': ' + s[1]).join('\n');
+    return { kind: 's', party: { name: su.name, phone: su.phone || '' }, rows: ev, sums, wa };
+  }
+  window.v18Statement = function (kind, id) {
+    const m = kind === 'c' ? custModel(id) : suppModel(id); if (!m) return;
+    window.__v18Wa = { phone: m.party.phone, text: m.wa };
+    openDoc('كشف حساب — ' + m.party.name, stmtHtml(m.kind, m.party, m.rows, m.sums),
+      `<button onclick="v18Wa(__v18Wa.phone,__v18Wa.text)">💬 واتساب</button><button onclick="navigator.clipboard&&navigator.clipboard.writeText(__v18Wa.text).then(()=>notifyUser('تم نسخ النص','success'))">📋 نسخ النص</button>`);
+  };
+
+  // ---------- 3) بحث سريع ----------
+  function searchIndex() {
+    const out = [];
+    const add = (tag, title, sub, hay, go) => out.push({ tag, title, sub, h: nrm(hay.join(' ')), go });
+    state.customers.forEach(c => add('عميل', c.name, c.phone || c.id, [c.name, c.phone, c.id, c.address], () => openCustomerDetailModal(c.id)));
+    state.operations.forEach(o => add('عملية', o.code, custName(o.customerId), [o.code, o.id, custName(o.customerId), o.name, o.location], () => openOperationDetailModal(o.id)));
+    state.suppliers.forEach(s => add('مورد', s.name, s.phone || s.id, [s.name, s.phone, s.id], () => openSupplierDetailModal(s.id)));
+    state.products.forEach(p => add('صنف', p.name, p.id, [p.name, p.id, p.brand, p.section], () => { navigateTo('master-products'); v18FilterPage(p.name); }));
+    const seen = {}; state.purchases.forEach(p => { const k = purchaseInvoiceKey(p); if (seen[k]) return; seen[k] = 1; const su = (state.suppliers.find(s => s.id === p.supplierId) || {}).name || ''; add('فاتورة شراء', k, su + ' — ' + (p.date || ''), [k, p.merchantNo, su, p.id], () => { navigateTo('purchases'); v18FilterPage(k); }); });
+    state.expenses.forEach(e => { if (e.notes) add('مصروف', e.notes.slice(0, 50), (e.date || '') + ' — ' + fm(e.amount), [e.notes, e.id], () => { navigateTo('expenses'); v18FilterPage(e.notes.slice(0, 30)); }); });
+    state.collections.forEach(c => add('تحصيل', c.id + ' — ' + custName(c.customerId), (c.date || '') + ' — ' + fm(c.amount), [c.id, custName(c.customerId), c.notes], () => { navigateTo('collections'); v18FilterPage(custName(c.customerId)); }));
+    return out;
+  }
+  window.v18FilterPage = function (q) { setTimeout(() => { const i = document.querySelector('#mainContentArea input[onkeyup*="filterTable"]'); if (i) { i.value = q; i.dispatchEvent(new Event('keyup', { bubbles: true })); try { i.onkeyup && i.onkeyup.call(i); } catch (e) { } } }, 120); };
+  let sIdx = null, sHits = [], sSel = 0;
+  window.v18SearchRun = function (q) {
+    const box = $('v18Res'); if (!box) return;
+    const n = nrm(q).trim();
+    if (!n) { box.innerHTML = '<div style="padding:14px;color:#78716c">اكتب اسم عميل أو مورد أو كود عملية أو رقم فاتورة أو صنف...</div>'; sHits = []; return; }
+    if (!sIdx) sIdx = searchIndex();
+    const words = n.split(' ').filter(Boolean);
+    sHits = sIdx.filter(x => words.every(w => x.h.includes(w))).slice(0, 40); sSel = 0;
+    box.innerHTML = sHits.length ? sHits.map((x, i) => `<div class="v18-sr ${i === 0 ? 'on' : ''}" data-i="${i}" onclick="v18SearchGo(${i})"><span class="v18-tag">${esc(x.tag)}</span><div style="min-width:0"><div style="font-weight:800">${esc(x.title)}</div><small>${esc(x.sub)}</small></div></div>`).join('') : '<div style="padding:14px;color:#78716c">مفيش نتائج.</div>';
+  };
+  window.v18SearchGo = function (i) { const h = sHits[i]; if (!h) return; v5CloseSub(); try { h.go(); } catch (e) { console.error(e); } };
+  window.v18OpenSearch = function (seed) {
+    sIdx = null;
+    v5OpenSub('بحث سريع', `<input id="v18Q" autocomplete="off" placeholder="ابحث في كل النظام..." class="w-full p-3 border border-stone-300 rounded-xl text-sm" oninput="v18SearchRun(this.value)"><div id="v18Res" style="max-height:55vh;overflow:auto;margin-top:8px"></div>`, 'max-w-lg');
+    const q = $('v18Q'); if (!q) return; q.value = seed || ''; q.focus(); v18SearchRun(q.value);
+    q.onkeydown = ev => {
+      if (ev.key === 'Escape') { v5CloseSub(); return; }
+      if (ev.key === 'Enter') { v18SearchGo(sSel); return; }
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); sSel = Math.max(0, Math.min(sHits.length - 1, sSel + (ev.key === 'ArrowDown' ? 1 : -1))); document.querySelectorAll('#v18Res .v18-sr').forEach((e, i) => e.classList.toggle('on', i === sSel)); }
+    };
+  };
+  window.handleGlobalSearch = function (val) { const i = $('globalSearchInput'); if (i) { i.value = ''; i.blur(); } v18OpenSearch(val); };
+  { const gi = $('globalSearchInput'); if (gi) { gi.removeAttribute('onkeyup'); gi.addEventListener('focus', () => { gi.blur(); v18OpenSearch(''); }); } }
+
+  // ---------- 4) تكرار ----------
+  function dupViaEdit(opener, args, id) {
+    window[opener].apply(null, args);
+    const f = document.querySelector('#modalContainer form'); if (!f) return;
+    const oh = f.getAttribute('onsubmit') || ''; f.setAttribute('onsubmit', oh.split("'" + id + "'").join("''"));
+    const h = document.querySelector('#modalContainer h3'); if (h) h.textContent = 'نسخة جديدة — ' + h.textContent.replace('تعديل', 'تسجيل');
+    f.querySelectorAll('button[type=submit]').forEach(b => { b.textContent = b.textContent.replace('حفظ التعديلات', 'حفظ كحركة جديدة'); });
+    f.querySelectorAll('input[type=date]').forEach(i => { i.value = today(); i.dispatchEvent(new Event('change', { bubbles: true })); });
+    notifyUser('ده نموذج جديد منسوخ — راجع البيانات واحفظ.', 'info');
+  }
+  function fillExpense(p) {
+    const set = (id, v) => { const el = $(id); if (!el || v == null || v === '') return; if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === String(v))) return; el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); };
+    set('exp_category', p.category); set('exp_opId', p.operationId); set('exp_workerId', p.workerId); set('exp_accountId', p.accountId); set('exp_glAccountId', p.glAccountId);
+    const a = $('exp_amount'); if (a && p.amount) { a.value = p.amount; a.dispatchEvent(new Event('input', { bubbles: true })); }
+  }
+  window.v18DupExpense = function (id) { const e = state.expenses.find(x => x.id === id); if (!e) return; const p = JSON.parse(JSON.stringify(e)); delete p.id; p.date = today(); openAddExpenseModal('', p); fillExpense(p); notifyUser('نسخة جديدة من المصروف — راجع واحفظ.', 'info'); };
+  window.v18DupPurchase = function (id) {
+    const p0 = state.purchases.find(x => x.id === id); if (!p0) return;
+    const key = purchaseInvoiceKey(p0); const lines = state.purchases.filter(x => purchaseInvoiceKey(x) === key);
+    openAddPurchaseModal();
+    const set = (el, v, ev) => { if (!el) return; el.value = v; el.dispatchEvent(new Event(ev || 'change', { bubbles: true })); };
+    set($('v10p_supplier'), p0.supplierId); set($('v10p_pay'), p0.paymentType === 'credit' ? 'credit' : 'cash'); try { v10PayChanged(); } catch (e) { }
+    if (p0.paymentType !== 'credit' && $('v10p_acc')) set($('v10p_acc'), p0.accountId || '');
+    let g = 0; while (document.querySelectorAll('#v10Rows .v10row').length < lines.length && g++ < 60) v10AddRow();
+    const rows = [...document.querySelectorAll('#v10Rows .v10row')];
+    lines.forEach((l, i) => {
+      const d = rows[i]; if (!d) return; const F = k => d.querySelector('[data-f="' + k + '"]');
+      set(F('dest'), '__STOCK__');
+      const t = F('tag'); if (t) { const o = [...t.options].find(o => o.value && o.value !== '__new__'); if (o) set(t, o.value); }
+      set(F('prod'), l.productId); if (l.brand && F('brand')) set(F('brand'), l.brand, 'input'); if (l.section && F('section')) set(F('section'), l.section, 'input');
+      set(F('qty'), l.qty, 'input'); set(F('cost'), l.unitCost, 'input');
+    });
+    notifyUser('نسخة جديدة من الفاتورة (وجهتها المخزن) — راجع الوجهة والكميات واحفظ.', 'info', 5000);
+  };
+  window.v18DupViaEdit = dupViaEdit;
+  const DUPS = [
+    [/^openAddExpenseModal\('([^']+)'\)$/, id => v18DupExpense(id)],
+    [/^openAddCollectionModal\('', '([^']+)'\)$/, id => dupViaEdit('openAddCollectionModal', ['', id], id)],
+    [/^openAddSupplierPaymentModal\('', '([^']+)'\)$/, id => dupViaEdit('openAddSupplierPaymentModal', ['', id], id)],
+    [/^openEditPurchaseModal\('([^']+)'\)$/, id => v18DupPurchase(id)]
+  ];
+  // ---------- 6) مصروفات متكررة ----------
+  function recList() { if (!state.settings) return []; if (!Array.isArray(state.settings.recurringExpenses)) state.settings.recurringExpenses = []; return state.settings.recurringExpenses; }
+  const CAT = { Labor: 'عمالة', Transportation: 'نقل', Misc: 'نثريات', ProfitWithdrawal: 'سحب أرباح', Warranty: 'ضمان' };
+  window.v18RecurSave = function (expId) {
+    const e = state.expenses.find(x => x.id === expId); if (!e) return;
+    const name = prompt('اسم المصروف المتكرر (مثال: إيجار المكتب):', (e.notes || '').slice(0, 40) || (CAT[e.category] || e.category)); if (!name) return;
+    const dayS = prompt('يوم الشهر اللي بيتسجل فيه (1 إلى 28):', '1'); const day = Math.max(1, Math.min(28, parseInt(dayS, 10) || 1));
+    const L = recList(); const n = L.reduce((m, x) => Math.max(m, parseInt(String(x.id).replace('RC-', ''), 10) || 0), 0) + 1;
+    const tpl = { id: 'RC-' + n, name: name.trim(), day, category: e.category, operationId: e.operationId || '', amount: e.amount, accountId: e.accountId || '', glAccountId: e.glAccountId || '', notes: e.notes || '', lastDone: ymNow() };
+    L.push(tpl); logAudit('مصروف متكرر', 'حفظ ' + tpl.name + ' كمصروف متكرر'); saveState(); notifyUser('اتحفظ كمصروف متكرر. هتلاقيه في زر 🔁 ويفكّرك كل شهر.', 'success');
+  };
+  window.v18RecurUse = function (id) {
+    const t = recList().find(x => x.id === id); if (!t) return; v5CloseSub();
+    window.__v18Recur = id;
+    const p = { category: t.category, operationId: t.operationId, amount: t.amount, accountId: t.accountId, glAccountId: t.glAccountId, notes: t.notes || t.name, date: today() };
+    openAddExpenseModal('', p); fillExpense(p);
+  };
+  window.v18RecurDel = function (id) { if (!confirm('حذف هذا المصروف المتكرر؟ (المصروفات المسجلة قبل كده مش هتتأثر)')) return; state.settings.recurringExpenses = recList().filter(x => x.id !== id); saveState(); v18OpenRecurring(); };
+  window.v18OpenRecurring = function () {
+    const L = recList();
+    v5OpenSub('🔁 المصروفات المتكررة', L.length ? '<div class="space-y-2">' + L.map(t => { const due = t.lastDone !== ymNow(); return `<div class="p-3 border rounded-xl flex items-center justify-between gap-2 ${due ? 'border-amber-300 bg-amber-50' : 'border-stone-200 bg-stone-50'}"><div class="min-w-0"><div class="font-bold">${esc(t.name)}</div><div class="text-[10px] text-stone-500">${fm(t.amount)} · يوم ${t.day} من الشهر · ${esc(CAT[t.category] || t.category)} · ${due ? '<b class="text-amber-700">لم يُسجَّل هذا الشهر</b>' : 'اتسجّل هذا الشهر'}</div></div><div class="flex gap-1.5 shrink-0"><button type="button" onclick="v18RecurUse('${esc(t.id)}')" class="${BTN} bg-deep-blue text-white">سجّل الآن</button><button type="button" onclick="v18RecurDel('${esc(t.id)}')" class="${BTN} bg-rose-50 text-rose-700">حذف</button></div></div>`; }).join('') + '</div><p class="text-[10px] text-stone-400 mt-3">«سجّل الآن» بيفتح نموذج المصروف جاهز — عدّل المبلغ لو اتغيّر واحفظ.</p>' : '<p class="text-stone-500">مفيش مصروفات متكررة. من صفحة المصروفات اضغط 🔁 جنب أي مصروف عشان تحوّله لمتكرر.</p>', 'max-w-lg');
+  };
+  { const ose = saveExpenseForm; saveExpenseForm = function () { const n = state.expenses.length, rid = window.__v18Recur; const r = ose.apply(this, arguments); if (rid && state.expenses.length > n) { const t = recList().find(x => x.id === rid); if (t) { t.lastDone = ymNow(); saveState(); } } window.__v18Recur = null; return r; }; }
+  { const ocm = closeModal; closeModal = function () { window.__v18Recur = null; return ocm.apply(this, arguments); }; }
+
+  // ---------- 5) جدول دفعات العقد ----------
+  function schedEval(c) {
+    const paid = collectionAllocatedToInvoice(c.id), sch = (c.paymentSchedule || []).slice().sort((a, b) => String(a.due).localeCompare(String(b.due)));
+    let cum = 0; const t = today();
+    const items = sch.map(s => {
+      cum = round2(cum + Number(s.amount || 0));
+      const left = round2(Math.min(Number(s.amount || 0), Math.max(0, cum - paid)));
+      const st = left <= 0.004 ? 'paid' : left < Number(s.amount) - 0.004 ? 'part' : 'open';
+      return Object.assign({}, s, { left, st, overdue: st !== 'paid' && s.due && s.due < t });
+    });
+    return { paid, remaining: round2(Number(c.value || 0) - paid), items };
+  }
+  function schedAlerts() {
+    let od = 0, odN = 0, soon = 0, soonN = 0; const lim = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    (state.contracts || []).forEach(c => schedEval(c).items.forEach(i => { if (i.overdue) { od += i.left; odN++; } else if (i.st !== 'paid' && i.due && i.due <= lim) { soon += i.left; soonN++; } }));
+    return { od: round2(od), odN, soon: round2(soon), soonN };
+  }
+  V5_VIEWS['pay-schedule'] = function () {
+    const A = schedAlerts();
+    const rows = (state.contracts || []).filter(c => Number(c.value) > 0).map(c => ({ c, e: schedEval(c) })).filter(x => x.e.remaining > 0.004 || x.e.items.length).sort((a, b) => { const na = a.e.items.find(i => i.st !== 'paid'), nb = b.e.items.find(i => i.st !== 'paid'); return String(na ? na.due : '9') .localeCompare(String(nb ? nb.due : '9')); });
+    const stl = { paid: ['مسددة', '#047857'], part: ['جزئية', '#b45309'], open: ['مستحقة', '#1d4ed8'] };
+    return `<div class="space-y-4"><div><h2 class="text-xl font-bold text-stone-900">جدول الدفعات والمتأخرات</h2><p class="text-xs text-stone-500">حدّد دفعات كل عقد بتواريخها، والنظام يقارنها بالتحصيلات ويفكّرك بالمتأخر.</p></div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"><div class="bg-white border ${A.odN ? 'border-rose-300' : 'border-stone-200'} rounded-2xl p-4"><div class="text-xs text-stone-500">دفعات متأخرة</div><div class="text-xl font-black ${A.odN ? 'text-rose-700' : ''}">${A.odN} — ${fm(A.od)}</div></div><div class="bg-white border border-stone-200 rounded-2xl p-4"><div class="text-xs text-stone-500">مستحقة خلال 7 أيام</div><div class="text-xl font-black">${A.soonN} — ${fm(A.soon)}</div></div></div>
+    <div class="bg-white rounded-2xl border border-stone-200 overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-right text-xs"><thead><tr class="bg-stone-100 text-stone-700 font-bold border-b border-stone-200"><th class="p-3">العميل</th><th class="p-3">العقد</th><th class="p-3">القيمة</th><th class="p-3">المحصّل</th><th class="p-3">المتبقي</th><th class="p-3">الدفعة القادمة</th><th class="p-3">الحالة</th><th class="p-3"></th></tr></thead><tbody class="divide-y divide-stone-100">
+    ${rows.map(({ c, e }) => { const nx = e.items.find(i => i.st !== 'paid'); const cu = state.customers.find(x => x.id === c.customerId) || {}; return `<tr class="hover:bg-stone-50"><td class="p-3 font-bold">${esc(cu.name || '')}</td><td class="p-3">${esc(c.id)}</td><td class="p-3">${fm(c.value)}</td><td class="p-3">${fm(e.paid)}</td><td class="p-3 font-bold">${fm(e.remaining)}</td><td class="p-3">${nx ? esc(nx.label || '') + ' — ' + esc(nx.due) + ' — ' + fm(nx.left) : (e.items.length ? '✓ كل الدفعات مسددة' : '<span class="text-stone-400">لم يُحدَّد جدول</span>')}</td><td class="p-3">${nx ? `<b style="color:${nx.overdue ? '#b91c1c' : stl[nx.st][1]}">${nx.overdue ? 'متأخرة' : stl[nx.st][0]}</b>` : ''}</td><td class="p-3 whitespace-nowrap"><button type="button" onclick="v18OpenSchedule('${esc(c.id)}')" class="${BTN} bg-deep-blue text-white">جدول الدفعات</button> ${nx && nx.overdue ? `<button type="button" onclick="v18SchedWa('${esc(c.id)}')" class="${BTN} bg-emerald-600 text-white">💬 تذكير</button>` : ''}</td></tr>`; }).join('') || '<tr><td colspan="8" class="p-6 text-center text-stone-400">لا توجد عقود عليها متبقي.</td></tr>'}
+    </tbody></table></div></div></div>`;
+  };
+  window.v18SchedWa = function (cid) {
+    const c = state.contracts.find(x => x.id === cid); if (!c) return; const cu = state.customers.find(x => x.id === c.customerId) || {}; const e = schedEval(c);
+    const od = e.items.filter(i => i.overdue);
+    const t = 'السلام عليكم ' + (cu.name || '') + '\nتذكير بدفعات العقد ' + c.id + ' المتأخرة:\n' + od.map(i => '• ' + (i.label || 'دفعة') + ' (استحقاق ' + i.due + '): ' + fm(i.left)).join('\n') + '\nإجمالي المتأخر: ' + fm(od.reduce((s, i) => s + i.left, 0)) + '\nبرجاء التواصل لترتيب السداد. شكرًا لحضرتك.';
+    v18Wa(cu.phone, t);
+  };
+  let schedRows = [], schedCid = '';
+  function schedRowHtml(r, i) { return `<div class="grid grid-cols-12 gap-2 items-center" data-i="${i}"><input class="col-span-4 p-2 border border-stone-300 rounded-lg" placeholder="الوصف (مقدم / مرحلة...)" value="${esc(r.label || '')}" oninput="v18SchedSet(${i},'label',this.value)"><input type="date" class="col-span-4 p-2 border border-stone-300 rounded-lg" value="${esc(r.due || '')}" oninput="v18SchedSet(${i},'due',this.value)"><input type="number" step="any" min="0" class="col-span-3 p-2 border border-stone-300 rounded-lg" placeholder="المبلغ" value="${r.amount === '' || r.amount == null ? '' : r.amount}" oninput="v18SchedSet(${i},'amount',this.value)"><button type="button" onclick="v18SchedDel(${i})" class="col-span-1 text-rose-600 font-bold">✕</button></div>`; }
+  function schedPaint() { const h = $('v18SchedRows'); if (h) h.innerHTML = schedRows.map(schedRowHtml).join('') || '<p class="text-stone-400">لا توجد دفعات. اضغط «＋ دفعة».</p>'; const c = state.contracts.find(x => x.id === schedCid); const s = schedRows.reduce((t, r) => t + Number(r.amount || 0), 0); const f = $('v18SchedSum'); if (f && c) f.innerHTML = 'إجمالي الدفعات: <b>' + fm(s) + '</b> من قيمة العقد <b>' + fm(c.value) + '</b>' + (s > Number(c.value) + 0.004 ? ' <span class="text-rose-700 font-bold">⚠ أكبر من قيمة العقد</span>' : s < Number(c.value) - 0.004 && s > 0 ? ' <span class="text-stone-500">(الباقي ' + fm(Number(c.value) - s) + ' بدون جدول)</span>' : ''); }
+  window.v18SchedSet = function (i, k, v) { if (schedRows[i]) { schedRows[i][k] = v; if (k === 'amount') schedPaint2(); } };
+  function schedPaint2() { const c = state.contracts.find(x => x.id === schedCid); const s = schedRows.reduce((t, r) => t + Number(r.amount || 0), 0); const f = $('v18SchedSum'); if (f && c) f.innerHTML = 'إجمالي الدفعات: <b>' + fm(s) + '</b> من قيمة العقد <b>' + fm(c.value) + '</b>' + (s > Number(c.value) + 0.004 ? ' <span class="text-rose-700 font-bold">⚠ أكبر من قيمة العقد</span>' : ''); }
+  window.v18SchedAdd = function () { schedRows.push({ label: '', due: today(), amount: '' }); schedPaint(); };
+  window.v18SchedDel = function (i) { schedRows.splice(i, 1); schedPaint(); };
+  window.v18OpenSchedule = function (cid) {
+    const c = state.contracts.find(x => x.id === cid); if (!c) return; schedCid = cid; schedRows = (c.paymentSchedule || []).map(x => ({ label: x.label || '', due: x.due || '', amount: x.amount }));
+    const cu = state.customers.find(x => x.id === c.customerId) || {};
+    v5OpenSub('جدول دفعات ' + esc(c.id) + ' — ' + esc(cu.name || ''), `<div class="space-y-3"><div id="v18SchedRows" class="space-y-2"></div><div class="flex gap-2"><button type="button" onclick="v18SchedAdd()" class="${BTN} bg-stone-200">＋ دفعة</button></div><div id="v18SchedSum" class="text-xs"></div><div class="flex justify-end gap-2 pt-2"><button type="button" onclick="v5CloseSub()" class="${BTN} bg-stone-200">إلغاء</button><button type="button" onclick="v18SchedSave()" class="${BTN} bg-emerald-600 text-white">حفظ الجدول</button></div></div>`, 'max-w-xl');
+    schedPaint();
+  };
+  window.v18SchedSave = function () {
+    const c = state.contracts.find(x => x.id === schedCid); if (!c) return;
+    const rows = schedRows.filter(r => r.label || r.due || r.amount !== '');
+    for (const r of rows) { if (!(Number(r.amount) > 0)) return void failValidation('كل دفعة لازم يكون مبلغها أكبر من صفر.'); if (!r.due) return void failValidation('اختر تاريخ استحقاق لكل دفعة.'); }
+    const tot = rows.reduce((s, r) => s + Number(r.amount), 0);
+    if (tot > Number(c.value) + 0.004 && !confirm('إجمالي الدفعات أكبر من قيمة العقد. حفظ على أي حال؟')) return;
+    c.paymentSchedule = rows.map((r, i) => ({ id: 'PS-' + c.id + '-' + (i + 1), label: String(r.label || '').trim() || ('دفعة ' + (i + 1)), due: r.due, amount: round2(Number(r.amount)) }));
+    logAudit('جدول دفعات', 'تحديث جدول دفعات العقد ' + c.id); saveState(); v5CloseSub(); refreshCurrentView(); notifyUser('تم حفظ جدول الدفعات', 'success');
+  };
+  { const o = v10Reminders; v10Reminders = function () {
+    const al = o.apply(this, arguments) || [];
+    try {
+      const A = schedAlerts(); if (A.odN) al.unshift(['#d9534f', `${A.odN} دفعة متأخرة من العملاء بقيمة ${fm(A.od)}`, "navigateTo('pay-schedule')"]); if (A.soonN) al.push(['#e6a23c', `${A.soonN} دفعة مستحقة خلال 7 أيام (${fm(A.soon)})`, "navigateTo('pay-schedule')"]);
+      const d = new Date().getDate(), due = recList().filter(t => t.lastDone !== ymNow() && d >= (t.day || 1)); if (due.length) al.push(['#5aa9e6', `${due.length} مصروف متكرر لم يُسجَّل هذا الشهر`, 'v18OpenRecurring()']);
+    } catch (e) { }
+    return al;
+  }; }
+
+  window.__v18 = { schedEval: schedEval, schedAlerts: schedAlerts };
+  // ---------- أزرار الهيدر + أزرار الصفوف ----------
+  function addNav() {
+    const sub = $('sub-finance'); if (!sub || $('nav-pay-schedule')) return;
+    const a = document.createElement('a'); a.id = 'nav-pay-schedule'; a.href = '#/pay-schedule'; a.className = 'nav-btn w-full text-right px-3 py-2 text-xs text-stone-600 hover:bg-stone-200/80 rounded-lg'; a.textContent = 'جدول الدفعات والمتأخرات';
+    a.addEventListener('click', ev => { if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button === 1) return; ev.preventDefault(); navigateTo('pay-schedule'); });
+    const col = $('nav-collections'); if (col && col.parentElement === sub) col.after(a); else sub.appendChild(a);
+    const r = document.createElement('button'); r.id = 'nav-recurring'; r.type = 'button'; r.className = a.className; r.textContent = '🔁 المصروفات المتكررة'; r.onclick = () => v18OpenRecurring(); a.after(r);
+  }
+  function addHeader() {
+    const host = $('hdActions'); if (!host || $('v18Hd')) return;
+    const mk = (id, t, ti, fn) => { const b = document.createElement('button'); b.type = 'button'; b.id = id; b.className = 'v10-bell'; b.title = ti; b.setAttribute('aria-label', ti); b.textContent = t; b.style.fontSize = '17px'; b.onclick = fn; return b; };
+    const g = document.createElement('span'); g.id = 'v18Hd'; g.style.cssText = 'display:inline-flex;gap:8px;align-items:center';
+    g.appendChild(mk('v18HdSearch', '🔍', 'بحث سريع (Ctrl+K)', () => v18OpenSearch('')));
+    g.appendChild(mk('v18HdXls', '📊', 'تصدير الصفحة إلى Excel', () => v18ExportExcel()));
+    g.appendChild(mk('v18HdPrint', '🖨', 'طباعة الصفحة / حفظ PDF', () => v18PrintPage()));
+    host.insertBefore(g, host.firstChild);
+  }
+  function addRowButtons() {
+    document.querySelectorAll('button.action-edit[onclick]').forEach(b => {
+      const oc = b.getAttribute('onclick') || ''; if (b.dataset.v18) return;
+      b.dataset.v18 = '1';
+      const mkb = (txt, cls, fn) => { const x = document.createElement('button'); x.type = 'button'; x.className = 'action-edit'; x.dataset.v18 = '1'; x.textContent = txt; x.style.marginInlineStart = '4px'; x.onclick = ev => { ev.stopPropagation(); fn(); }; if (cls) x.title = cls; b.after(x); return x; };
+      let m;
+      for (const [re, fn] of DUPS) { if ((m = re.exec(oc))) { const id = m[1]; mkb('تكرار', 'نسخ كحركة جديدة', () => fn(id)); if (re === DUPS[0][0]) { /* مصروف: أضف 🔁 */ const t = b.nextElementSibling; if (t) { const x = document.createElement('button'); x.type = 'button'; x.className = 'action-edit'; x.dataset.v18 = '1'; x.textContent = '🔁'; x.title = 'حفظ كمصروف متكرر'; x.style.marginInlineStart = '4px'; x.onclick = ev => { ev.stopPropagation(); v18RecurSave(id); }; t.after(x); } } return; } }
+      if ((m = /^openEditCustomerModal\('([^']+)'\)$/.exec(oc))) { mkb('كشف حساب', 'كشف حساب العميل', () => v18Statement('c', m[1])); return; }
+      if ((m = /^openAddSupplierModal\('([^']+)'\)$/.exec(oc))) { mkb('كشف حساب', 'كشف حساب المورد', () => v18Statement('s', m[1])); return; }
+    });
+    // أزرار داخل نوافذ التفاصيل (عميل/مورد) ليست بنفس الكلاس
+    document.querySelectorAll('#modalContainer button[onclick^="openEditCustomerModal("],#modalContainer button[onclick^="openAddSupplierModal("]').forEach(b => {
+      if (b.dataset.v18) return; b.dataset.v18 = '1';
+      const m = /^(openEditCustomerModal|openAddSupplierModal)\('([^']+)'\)$/.exec(b.getAttribute('onclick') || ''); if (!m) return;
+      const x = document.createElement('button'); x.type = 'button'; x.dataset.v18 = '1'; x.className = 'px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold'; x.textContent = 'كشف حساب';
+      x.onclick = () => { closeModal(); v18Statement(m[1] === 'openEditCustomerModal' ? 'c' : 's', m[2]); }; b.after(x);
+    });
+  }
+  let t18 = null; const run = () => { clearTimeout(t18); t18 = setTimeout(() => { try { addNav(); addHeader(); addRowButtons(); } catch (e) { console.error(e); } }, 120); };
+  new MutationObserver(run).observe(document.body, { childList: true, subtree: true }); run();
+  setInterval(() => { try { addHeader(); addNav(); } catch (e) { } }, 1500);
+})();
+
+// ============================================================
+// V19 — «تقرير المهندس / الإدارة»: زر واحد يطلّع PDF منسّق من عدة صفحات، كل صفحة تقرير محدد.
+// الأرقام كلها من نفس دوال النظام (لا حسابات جديدة). الطباعة / حفظ PDF من المتصفح.
+// ============================================================
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const num = v => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const cur = () => (state.settings && state.settings.general && state.settings.general.currency) || 'EGP';
+  const co = () => (state.settings && state.settings.general && state.settings.general.companyName) || '';
+  const cn = id => (state.customers.find(c => c.id === id) || {}).name || '';
+  const sn = id => (state.suppliers.find(c => c.id === id) || {}).name || '';
+  const PH = { 1: 'الهيكل والسكك', 2: 'الكابينة والأبواب', 3: 'الكنترول والأسلاك' };
+  const ST = { active: 'نشطة', delayed: 'متأخرة', warranty: 'ضمان', completed: 'منتهية' };
+  const CAT = { Labor: 'عمالة ومصنعيات', Transportation: 'نقل ومشاوير', Misc: 'نثريات', ProfitWithdrawal: 'سحب أرباح', Warranty: 'ضمان وصيانة', Goods: 'بضاعة ومواد', Maintenance: 'صيانة', Other: 'أخرى' };
+
+  const css = document.createElement('style'); css.id = 'v19-css';
+  css.textContent = `
+  #v19Rep{position:fixed;inset:0;z-index:95;background:#e7e5e4;overflow:auto;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  #v19Rep .rp-bar{position:sticky;top:0;z-index:3;background:#1f3a5f;color:#fff;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px}
+  #v19Rep .rp-bar button{background:#fff;color:#1f3a5f;border:0;border-radius:8px;padding:6px 12px;font-weight:800;font-size:12px;cursor:pointer}
+  #v19Rep .rp-bar small{opacity:.8;flex-basis:100%}
+  .rp-page{background:#fff;color:#1c1917;width:794px;max-width:96vw;min-height:1050px;margin:14px auto;padding:34px 38px 54px;box-shadow:0 4px 18px rgba(0,0,0,.15);position:relative;box-sizing:border-box;font-size:13px;line-height:1.7;page-break-after:always;break-after:page}
+  .rp-page:last-of-type{page-break-after:auto;break-after:auto}
+  .rp-head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #1f3a5f;padding-bottom:8px;margin-bottom:16px}
+  .rp-head b{font-size:19px;color:#1f3a5f}.rp-head span{font-size:11px;color:#78716c}
+  .rp-foot{position:absolute;bottom:16px;inset-inline:38px;display:flex;justify-content:space-between;font-size:10px;color:#a8a29e;border-top:1px solid #e7e5e4;padding-top:6px}
+  .rp-page h3{font-size:14px;margin:18px 0 6px;color:#1f3a5f;font-weight:900}
+  .rp-page table{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px}
+  .rp-page th{background:#1f3a5f;color:#fff;padding:6px 8px;text-align:right;font-weight:700}
+  .rp-page td{padding:5px 8px;border-bottom:1px solid #e7e5e4;text-align:right}
+  .rp-page tr{break-inside:avoid}
+  .rp-page tbody tr:nth-child(even) td{background:#fafaf9}
+  .rp-page tfoot td{font-weight:900;border-top:2px solid #1f3a5f;background:#f5f5f4}
+  .rp-page td.n,.rp-page th.n{text-align:left;direction:ltr;white-space:nowrap}
+  .rp-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}
+  .rp-kpi{border:1px solid #d6d3d1;border-radius:10px;padding:10px 12px}
+  .rp-kpi small{color:#78716c;display:block;font-size:11px}.rp-kpi b{font-size:17px}
+  .rp-pos{background:#1f3a5f;color:#fff;border-radius:14px;padding:18px 22px;margin:8px 0}
+  .rp-pos b{font-size:30px;display:block;direction:ltr;text-align:right}
+  .rp-bar2{display:flex;height:22px;border-radius:6px;overflow:hidden;margin:8px 0}
+  .rp-bar2 i{display:block}
+  .rp-good{color:#047857}.rp-bad{color:#b91c1c}
+  .rp-cover{display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;min-height:930px}
+  .rp-cover h1{font-size:34px;color:#1f3a5f;margin:10px 0;font-weight:900}
+  .rp-cover .line{width:120px;height:4px;background:#1f3a5f;border-radius:4px;margin:14px auto}
+  .rp-pill{display:inline-block;background:#eef2ff;color:#3730a3;border-radius:999px;padding:3px 12px;font-weight:800;font-size:11px}
+  @page{size:A4;margin:10mm}
+  @media print{
+    html,body{height:auto!important;min-height:0!important;overflow:visible!important;display:block!important;background:#fff!important}
+    body>*:not(#v19Rep):not(#v18Doc){display:none!important}
+    #v19Rep{position:static!important;overflow:visible!important;background:#fff!important}
+    #v19Rep .rp-bar{display:none!important}
+    .rp-page{box-shadow:none!important;margin:0!important;width:auto!important;max-width:none!important;min-height:0!important;height:auto;padding:0 0 12mm!important}
+    .rp-cover{min-height:250mm!important}
+    .rp-foot{position:static!important;margin-top:10px}
+  }`;
+  document.head.appendChild(css);
+
+  const PAGES = [
+    ['summary', 'الملخص التنفيذي ووضع الشركة', true],
+    ['ops', 'العمليات الجارية', true],
+    ['pnl', 'الأرباح والخسائر للفترة', true],
+    ['dues', 'المستحقات (عملاء وموردين)', true],
+    ['money', 'التحصيلات والمصروفات في الفترة', true],
+    ['sched', 'الدفعات المتأخرة والقادمة', true],
+    ['forecast', 'توقّع السيولة', true],
+    ['stock', 'المخزون الحالي ومصدره', false]
+  ];
+  const monthStart = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01';
+  function range(kind, f, t) {
+    const n = new Date();
+    if (kind === 'all') return { from: '', to: '', label: 'كل الفترة' };
+    if (kind === 'year') return { from: n.getFullYear() + '-01-01', to: today(), label: 'من بداية ' + n.getFullYear() + ' حتى اليوم' };
+    if (kind === 'lastm') { const a = new Date(n.getFullYear(), n.getMonth() - 1, 1), b = new Date(n.getFullYear(), n.getMonth(), 0); const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); return { from: iso(a), to: iso(b), label: 'الشهر الماضي (' + iso(a) + ' → ' + iso(b) + ')' }; }
+    if (kind === 'custom') return { from: f || '', to: t || '', label: 'من ' + (f || '—') + ' إلى ' + (t || '—') };
+    return { from: monthStart(n), to: today(), label: 'الشهر الحالي (' + monthStart(n) + ' → ' + today() + ')' };
+  }
+  const inR = (d, r) => { d = String(d || ''); return (!r.from || d >= r.from) && (!r.to || d <= r.to); };
+  const tbl = (head, rows, foot, nIdx) => { const isN = i => (nIdx || []).includes(i); return `<table><thead><tr>${head.map((h, i) => `<th class="${isN(i) ? 'n' : ''}">${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.length ? rows.map(r => `<tr>${r.map((c, i) => `<td class="${isN(i) ? 'n' : ''}">${c}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${head.length}" style="text-align:center;color:#a8a29e">لا توجد بيانات</td></tr>`}</tbody>${foot ? `<tfoot><tr>${foot.map((c, i) => `<td class="${isN(i) ? 'n' : ''}">${c}</td>`).join('')}</tr></tfoot>` : ''}</table>`; };
+
+  function pnlFor(r) {
+    const keep = state;
+    try {
+      const copy = Object.assign({}, keep, { journalEntries: (keep.journalEntries || []).filter(e => inR(e.date, r)) });
+      state = copy; return v7IncomeStatement();
+    } finally { state = keep; }
+  }
+
+  const BUILD = {
+    summary(r) {
+      const pos = v5CompanyPosition();
+      const col = round2(state.collections.filter(c => inR(c.date, r)).reduce((s, c) => s + Number(c.amount || 0), 0));
+      const exp = round2(state.expenses.filter(e => inR(e.date, r) && e.category !== 'ProfitWithdrawal').reduce((s, e) => s + Number(e.amount || 0), 0));
+      const wd = round2(state.expenses.filter(e => inR(e.date, r) && e.category === 'ProfitWithdrawal').reduce((s, e) => s + Number(e.amount || 0), 0));
+      const inv = {}; state.purchases.filter(p => inR(p.date, r)).forEach(p => { inv[purchaseInvoiceKey(p)] = (inv[purchaseInvoiceKey(p)] || 0) + Number(p.totalCost || 0); });
+      const pur = round2(Object.values(inv).reduce((s, x) => s + x, 0));
+      const pl = pnlFor(r);
+      const res = [['سيولة', Math.max(0, pos.cash), '#e6b84a'], ['محجوزات', pos.reserved, '#5aa9e6'], ['مخازن الشركة', pos.companyStock, '#9b7be0']].filter(x => x[1] > 0.004);
+      const obl = [['التزامات (تجار وأخرى)', Math.max(0, round2(pos.merchantNet + pos.other.total)), '#ef7b6b'], ['احتياج إتمام العمليات', pos.needs.total, '#f2a58f']].filter(x => x[1] > 0.004);
+      const rT = round2(res.reduce((s, x) => s + x[1], 0)), oT = round2(obl.reduce((s, x) => s + x[1], 0)), tot = rT + oT;
+      const seg = x => `<i style="flex:${x[1]};background:${x[2]}" title="${esc(x[0])}"></i>`;
+      return `<div class="rp-pos"><small style="opacity:.8">وضع الشركة (موارد − التزامات)</small><b>${num(pos.position)} ${esc(cur())}</b><span style="background:rgba(255,255,255,.2);border-radius:999px;padding:2px 12px;font-size:12px;font-weight:800">${esc(pos.level.label)}</span></div>
+      ${tot > 0 ? `<div style="display:flex;gap:8px;font-size:11px"><div style="flex:${rT || 0.0001}">الموارد: ${num(rT)}</div><div style="flex:${oT || 0.0001}">الالتزامات: ${num(oT)}</div></div><div class="rp-bar2"><div style="flex:${rT || 0.0001};display:flex">${res.map(seg).join('')}</div><div style="width:6px"></div><div style="flex:${oT || 0.0001};display:flex">${obl.map(seg).join('')}</div></div><div style="font-size:11px;color:#57534e">${[...res, ...obl].map(x => `<span style="display:inline-block;margin-inline-end:14px"><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${x[2]};margin-inline-end:4px"></i>${esc(x[0])}: <b>${num(x[1])}</b></span>`).join('')}</div>` : ''}
+      <h3>مؤشرات الفترة — ${esc(r.label)}</h3>
+      <div class="rp-kpis"><div class="rp-kpi"><small>التحصيلات من العملاء</small><b>${num(col)}</b></div><div class="rp-kpi"><small>المصروفات (غير سحب الأرباح)</small><b>${num(exp)}</b></div><div class="rp-kpi"><small>مشتريات الفترة</small><b>${num(pur)}</b></div>
+      <div class="rp-kpi"><small>صافي ربح الفترة (قائمة الدخل)</small><b class="${pl.net >= 0 ? 'rp-good' : 'rp-bad'}">${num(pl.net)}</b></div><div class="rp-kpi"><small>أرباح مسحوبة</small><b>${num(wd)}</b></div><div class="rp-kpi"><small>عمليات جارية</small><b>${state.operations.filter(o => o.status !== 'completed').length}</b></div></div>
+      <h3>أرصدة الخزائن والحسابات</h3>${tbl(['الخزينة / الحساب', 'الرصيد'], pos.treasuries.map(t => [esc(t.name), num(t.balance)]), ['الإجمالي', num(pos.cash)], [1])}`;
+    },
+    ops(r) {
+      const ops = state.operations.filter(o => o.status !== 'completed');
+      let tC = 0, tCo = 0, tR = 0, tP = 0;
+      const rows = ops.map(o => {
+        const c = state.contracts.find(x => x.id === o.contractId); const val = c ? Number(c.value || 0) : 0; const got = c ? collectionAllocatedToInvoice(c.id) : 0;
+        let est = null; try { const e = computeOperationEstimate(o); est = e && e.profit != null ? Number(e.profit) : null; } catch (x) { }
+        tC += val; tCo += got; tR += val - got; if (est != null) tP += est;
+        return [esc(o.code), esc(cn(o.customerId)), esc(ST[o.status || 'active'] || o.status), esc(PH[v10PhaseOf(o)] || ''), num(val), num(got), num(val - got), est == null ? '<span style="color:#a8a29e">غير مكتمل</span>' : `<span class="${est >= 0 ? 'rp-good' : 'rp-bad'}">${num(est)}</span>`];
+      });
+      return `<p style="color:#57534e">العمليات الجارية (لم تنتهِ) مع قيمة العقد والمحصّل والمتبقي، والربح التقديري (مؤشر إداري يتحدّد بإنهاء العملية).</p>` + tbl(['العملية', 'العميل', 'الحالة', 'المرحلة', 'قيمة العقد', 'المحصّل', 'المتبقي', 'الربح التقديري'], rows, ['الإجمالي', '', '', '', num(tC), num(tCo), num(tR), num(tP)], [4, 5, 6, 7]);
+    },
+    pnl(r) {
+      const s = pnlFor(r); const sec = (t, x) => `<tr style="background:#eef2ff;font-weight:900"><td>${t}</td><td class="n">${num(x.total)}</td></tr>` + x.rows.filter(q => Math.abs(q.v) > 0.004).map(q => `<tr><td style="padding-inline-start:22px">${esc(q.acc.name)}</td><td class="n">${num(q.v)}</td></tr>`).join('');
+      return `<p style="color:#57534e">الفترة: ${esc(r.label)}. مبنية على دفتر الأستاذ (الربح بيتحقق عند إنهاء العملية).</p><table><thead><tr><th>البند</th><th class="n">المبلغ (${esc(cur())})</th></tr></thead><tbody>${sec('الإيرادات', s.rev)}${sec('تكلفة النشاط', s.cogs)}<tr style="font-weight:900;background:#f5f5f4"><td>مجمل الربح</td><td class="n">${num(s.gross)}</td></tr>${sec('المصروفات التشغيلية والعامة', s.opx)}${sec('مصروفات أخرى', s.oth)}${s.dep.total ? sec('الإهلاك', s.dep) : ''}</tbody><tfoot><tr><td>صافي الربح / (الخسارة)</td><td class="n ${s.net >= 0 ? 'rp-good' : 'rp-bad'}">${num(s.net)}</td></tr></tfoot></table>`;
+    },
+    dues(r) {
+      const cs = state.customers.map(c => ({ c, b: getCustomerBalance(c.id) })).filter(x => x.b.due > 0.004 || x.b.advance > 0.004).sort((a, b) => b.b.due - a.b.due);
+      const ss = state.suppliers.map(s => ({ s, b: getSupplierBalance(s.id) })).filter(x => x.b.due > 0.004 || x.b.advance > 0.004).sort((a, b) => b.b.due - a.b.due);
+      const T = getAllCustomersTotals(), U = getAllSuppliersTotals();
+      return `<h3>مستحقات العملاء</h3>${tbl(['العميل', 'إجمالي العقود', 'المحصّل', 'المتبقي', 'رصيد مقدم'], cs.map(x => [esc(x.c.name), num(x.b.invoicesTotal), num(x.b.collected), `<b>${num(x.b.due)}</b>`, x.b.advance > 0.004 ? num(x.b.advance) : '—']), ['الإجمالي', num(T.invoicesTotal), num(T.collected), num(T.due), num(T.advance)], [1, 2, 3, 4])}
+      <h3>مستحقات الموردين</h3>${tbl(['المورد', 'فواتير آجلة', 'المدفوع', 'المستحق', 'رصيد مقدم'], ss.map(x => [esc(x.s.name), num(x.b.creditTotal), num(x.b.paidTotal), `<b>${num(x.b.due)}</b>`, x.b.advance > 0.004 ? num(x.b.advance) : '—']), ['الإجمالي', num(U.creditTotal), num(U.paidTotal), num(U.due), num(U.advance)], [1, 2, 3, 4])}`;
+    },
+    money(r) {
+      const cols = state.collections.filter(c => inR(c.date, r)).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      const exps = state.expenses.filter(e => inR(e.date, r));
+      const by = {}; exps.forEach(e => { const k = CAT[e.category] || e.category || 'أخرى'; by[k] = round2((by[k] || 0) + Number(e.amount || 0)); });
+      const eT = round2(exps.reduce((s, e) => s + Number(e.amount || 0), 0)), cT = round2(cols.reduce((s, c) => s + Number(c.amount || 0), 0));
+      const big = exps.slice().sort((a, b) => Number(b.amount) - Number(a.amount)).slice(0, 10);
+      return `<h3>التحصيلات (${cols.length})</h3>${tbl(['التاريخ', 'العميل', 'ملاحظات', 'المبلغ'], cols.slice(0, 40).map(c => [esc(c.date), esc(cn(c.customerId)), esc(c.notes || ''), num(c.amount)]), ['الإجمالي', '', cols.length > 40 ? 'أول 40 حركة فقط في الجدول' : '', num(cT)], [3])}
+      <h3>المصروفات حسب البند</h3>${tbl(['البند', 'المبلغ'], Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => [esc(k), num(v)]), ['الإجمالي', num(eT)], [1])}
+      <h3>أكبر 10 مصروفات في الفترة</h3>${tbl(['التاريخ', 'البند', 'ملاحظات', 'المبلغ'], big.map(e => [esc(e.date), esc(CAT[e.category] || e.category || ''), esc(e.notes || ''), num(e.amount)]), null, [3])}`;
+    },
+    sched() {
+      const rows = []; const lim = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10); let od = 0, up = 0;
+      state.contracts.forEach(c => { const e = window.__v18.schedEval(c); e.items.forEach(i => { if (i.st === 'paid') return; if (i.overdue) { od += i.left; rows.push([i.due, esc(cn(c.customerId)), esc(c.id + ' — ' + i.label), num(i.left), '<b class="rp-bad">متأخرة</b>']); } else if (i.due && i.due <= lim) { up += i.left; rows.push([i.due, esc(cn(c.customerId)), esc(c.id + ' — ' + i.label), num(i.left), 'خلال 30 يوم']); } }); });
+      rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+      return `<div class="rp-kpis" style="grid-template-columns:repeat(2,1fr)"><div class="rp-kpi"><small>إجمالي المتأخر</small><b class="${od ? 'rp-bad' : ''}">${num(round2(od))}</b></div><div class="rp-kpi"><small>مستحق خلال 30 يوم</small><b>${num(round2(up))}</b></div></div>` + tbl(['الاستحقاق', 'العميل', 'العقد / الدفعة', 'المتبقي', 'الحالة'], rows, null, [3]);
+    },
+    forecast() {
+      const M = window.__v20.model(), neg = M.weeks.find(w => w.close < 0);
+      return `<div class="rp-kpis"><div class="rp-kpi"><small>النقدية الآن</small><b>${num(M.cash)}</b></div><div class="rp-kpi"><small>أقل رصيد متوقع</small><b class="${M.min.v < 0 ? 'rp-bad' : ''}">${num(M.min.v)}</b></div><div class="rp-kpi"><small>الرصيد بنهاية الفترة</small><b>${num(M.end)}</b></div></div>
+      <p style="font-weight:800" class="${neg ? 'rp-bad' : 'rp-good'}">${neg ? 'متوقع عجز نقدي من الأسبوع ' + (M.weeks.indexOf(neg) + 1) + ' (' + neg.from + ')' : 'السيولة كافية خلال فترة التوقع.'}</p>` +
+        tbl(['الأسبوع', 'من', 'تحصيلات', 'موردين', 'مصروفات', 'رصيد آخر'], M.weeks.map((w, i) => [i + 1, w.from, num(w.inn), num(w.sup), num(w.exp), `<b class="${w.close < 0 ? 'rp-bad' : ''}">${num(w.close)}</b>`]), null, [2, 3, 4, 5]) +
+        `<p style="color:#78716c;font-size:11px;margin-top:8px">تقدير مبني على الدفعات المجدولة ومستحقات الموردين (حسب موعد كل فاتورة، أو بعد ${M.P.supDays} يوم من تاريخها لو مفيش موعد) والمصروفات المتكررة + ${num(M.P.other)} شهريًا. المتبقي على العملاء بدون جدول (${num(M.unscheduled)}) غير داخل في التوقع.</p>`;
+    },
+    stock() {
+      const rows = state.surplus.filter(x => x.kind === 'stock' && x.status === 'available' && Number(x.qty) > 0).map(x => { const p = state.purchases.find(q => q.id === x.sourcePurchaseId); const pn = (state.products.find(q => q.id === x.productId) || {}).name || x.productId; return [esc(pn), x.qty, esc(x.tagId ? v5TagName(x.tagId) : (x.location || '')), esc((x.sourceInvoiceId || '') + (p && p.supplierId ? ' — ' + sn(p.supplierId) : '')), num(round2(x.qty * x.originalCost))]; });
+      const tot = round2(state.surplus.filter(x => x.kind === 'stock' && x.status === 'available' && Number(x.qty) > 0).reduce((s, x) => s + x.qty * x.originalCost, 0));
+      return tbl(['الصنف', 'الكمية', 'المكان', 'المصدر', 'القيمة'], rows, ['الإجمالي', '', '', '', num(tot)], [4]);
+    }
+  };
+
+  window.v19Open = function () {
+    const prev = JSON.parse(localStorage.getItem('EBHAAR_REPORT_PREF_V1') || 'null') || {};
+    v5OpenSub('📄 تقرير المهندس (PDF)', `<div class="space-y-3 text-xs">
+      <div><label class="block font-bold mb-1">الفترة</label><select id="v19_p" onchange="document.getElementById('v19_c').style.display=this.value==='custom'?'flex':'none'" class="w-full p-2.5 border border-stone-300 rounded-xl"><option value="month">الشهر الحالي</option><option value="lastm">الشهر الماضي</option><option value="year">من أول السنة</option><option value="all">كل الفترة</option><option value="custom">فترة محددة</option></select>
+      <div id="v19_c" style="display:none;gap:8px;margin-top:6px"><input id="v19_f" type="date" class="flex-1 p-2 border border-stone-300 rounded-lg"><input id="v19_t" type="date" class="flex-1 p-2 border border-stone-300 rounded-lg"></div></div>
+      <div><label class="block font-bold mb-1">الصفحات اللي تدخل في التقرير</label>${PAGES.map(p => `<label class="flex items-center gap-2 py-1"><input type="checkbox" class="v19pg" value="${p[0]}" ${(prev.pages ? prev.pages.includes(p[0]) : p[2]) ? 'checked' : ''}> ${esc(p[1])}</label>`).join('')}</div>
+      <div><label class="block font-bold mb-1">مُعدّ إلى (اختياري)</label><input id="v19_to" value="${esc(prev.to || '')}" placeholder="م. فلان" class="w-full p-2.5 border border-stone-300 rounded-xl"></div>
+      <div><label class="block font-bold mb-1">ملاحظة على الغلاف (اختياري)</label><textarea id="v19_n" rows="2" class="w-full p-2.5 border border-stone-300 rounded-xl">${esc(prev.note || '')}</textarea></div>
+      <div class="flex justify-end gap-2 pt-1"><button type="button" onclick="v5CloseSub()" class="px-4 py-2 bg-stone-200 rounded-xl font-bold">إلغاء</button><button type="button" onclick="v19Build()" class="px-4 py-2 bg-deep-blue text-white rounded-xl font-bold">عرض التقرير</button></div></div>`, 'max-w-md');
+    if (prev.kind && $('v19_p')) { $('v19_p').value = prev.kind; if (prev.kind === 'custom') { $('v19_c').style.display = 'flex'; $('v19_f').value = prev.f || ''; $('v19_t').value = prev.t || ''; } }
+  };
+  window.v19Build = function () {
+    const kind = $('v19_p').value, f = $('v19_f').value, t = $('v19_t').value, to = $('v19_to').value.trim(), note = $('v19_n').value.trim();
+    const pages = [...document.querySelectorAll('.v19pg')].filter(c => c.checked).map(c => c.value);
+    if (!pages.length) return void failValidation('اختر صفحة واحدة على الأقل.');
+    if (kind === 'custom' && f && t && f > t) return void failValidation('تاريخ البداية بعد النهاية.');
+    try { localStorage.setItem('EBHAAR_REPORT_PREF_V1', JSON.stringify({ kind, f, t, to, note, pages })); } catch (e) { }
+    const r = range(kind, f, t); v5CloseSub();
+    const secs = PAGES.filter(p => pages.includes(p[0]));
+    const head = (title, i, n) => `<div class="rp-head"><div><b>${esc(title)}</b><br><span>${esc(co())} — ${esc(r.label)}</span></div><span>${esc(today())}</span></div>`;
+    const foot = (i, n) => `<div class="rp-foot"><span>${esc(co())} — تقرير إداري سري</span><span>القسم ${i} من ${n}</span></div>`;
+    const N = secs.length + 1;
+    const cover = `<div class="rp-page"><div class="rp-cover"><div class="rp-pill">تقرير إداري</div><h1>${esc(co() || 'تقرير الشركة')}</h1><div class="line"></div><div style="font-size:20px;font-weight:800;color:#44403c">تقرير المهندس</div><div style="margin-top:18px;color:#57534e;line-height:2">الفترة: <b>${esc(r.label)}</b><br>تاريخ الإصدار: <b dir="ltr">${esc(today())}</b>${to ? '<br>مُعدّ إلى: <b>' + esc(to) + '</b>' : ''}</div>${note ? `<div style="margin-top:22px;max-width:480px;border:1px dashed #a8a29e;border-radius:10px;padding:10px 14px;color:#44403c">${esc(note)}</div>` : ''}<div style="margin-top:34px;font-size:12px;color:#78716c;text-align:right;max-width:420px"><b>محتويات التقرير:</b><br>${secs.map((s, i) => (i + 2) + '. ' + esc(s[1])).join('<br>')}</div></div>${foot(1, N)}</div>`;
+    let body = '';
+    try { body = secs.map((s, i) => `<div class="rp-page">${head(s[1], i + 2, N)}${BUILD[s[0]](r)}${foot(i + 2, N)}</div>`).join(''); }
+    catch (e) { console.error(e); failValidation('تعذّر تجهيز التقرير: ' + e.message); return; }
+    let d = $('v19Rep'); if (d) d.remove();
+    d = document.createElement('div'); d.id = 'v19Rep'; d.dir = 'rtl';
+    d.innerHTML = `<div class="rp-bar"><b style="flex:1">تقرير المهندس</b><button onclick="window.print()">🖨 طباعة / حفظ PDF</button><button onclick="document.getElementById('v19Rep').remove();v19Open()">⚙ تعديل الخيارات</button><button onclick="document.getElementById('v19Rep').remove()">✕ إغلاق</button><small>في نافذة الطباعة اختر الوجهة «حفظ كـ PDF» وفعّل «الرسومات في الخلفية» عشان الألوان تظهر.</small></div>${cover}${body}`;
+    document.body.appendChild(d);
+  };
+  function addBtns() {
+    const host = $('hdActions'); if (host && !$('v19Hd')) { const b = document.createElement('button'); b.type = 'button'; b.id = 'v19Hd'; b.className = 'v10-bell'; b.title = 'تقرير المهندس (PDF)'; b.setAttribute('aria-label', 'تقرير المهندس'); b.style.fontSize = '17px'; b.textContent = '📄'; b.onclick = () => v19Open(); host.insertBefore(b, host.firstChild); }
+    const sub = $('sub-reports'); if (sub && !$('nav-eng-report')) { const r = document.createElement('button'); r.id = 'nav-eng-report'; r.type = 'button'; r.className = 'nav-btn w-full text-right px-3 py-2 text-xs text-deep-blue font-bold hover:bg-stone-200/80 rounded-lg'; r.textContent = '📄 تقرير المهندس (PDF)'; r.onclick = () => v19Open(); sub.insertBefore(r, sub.firstChild); }
+  }
+  setInterval(() => { try { addBtns(); } catch (e) { } }, 1500); addBtns();
+})();
+
+// ============================================================
+// V20 — 1) توقّع السيولة (30/60/90 يوم) صفحة + تنبيه + صفحة في تقرير المهندس
+//        2) نسخة احتياطية تلقائية (تنزل لوحدها كل 7 أيام افتراضيًا)
+// لا تغيير في الحسابات أو شكل البيانات. الإعدادات محفوظة على نفس الجهاز.
+// ============================================================
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const num = v => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const addDays = (d, n) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); return x; };
+  const ymOf = d => iso(d).slice(0, 7);
+  const lsGet = (k, def) => { try { return Object.assign({}, def, JSON.parse(localStorage.getItem(k) || 'null') || {}); } catch (e) { return Object.assign({}, def); } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } };
+  const BTN = 'px-3 py-1.5 rounded-lg font-bold text-xs';
+
+  // ---------------- 1) توقّع السيولة ----------------
+  const FK = 'EBHAAR_FORECAST_V1';
+  const recList = () => (state.settings && Array.isArray(state.settings.recurringExpenses)) ? state.settings.recurringExpenses : [];
+  function defaultOther() {
+    // متوسط المصروفات العامة (بدون سحب الأرباح) لآخر 3 شهور كاملة، مطروحًا منه المتكرر المسجّل، لا يقل عن صفر
+    const n = new Date(), from = iso(new Date(n.getFullYear(), n.getMonth() - 3, 1)), to = iso(new Date(n.getFullYear(), n.getMonth(), 0));
+    const t = state.expenses.filter(e => e.date >= from && e.date <= to && e.category !== 'ProfitWithdrawal').reduce((s, e) => s + Number(e.amount || 0), 0);
+    const rec = recList().reduce((s, x) => s + Number(x.amount || 0), 0);
+    return Math.max(0, Math.round(t / 3 - rec));
+  }
+  function params() { const p = lsGet(FK, { days: 60, supDays: 30, overdueDays: 14, other: null }); if (p.other === null || p.other === '' || p.other === undefined) p.other = defaultOther(); return p; }
+  const dueMap = () => (state.settings && state.settings.supplierDueDates) || {};
+  function supInvoices() {
+    const out = [], P = lsGet(FK, { supDays: 30 }), M = dueMap();
+    (state.suppliers || []).forEach(sp => { let b; try { b = getSupplierBalance(sp.id); } catch (e) { return; } (b.invoices || []).forEach(i => { if (i.remaining <= 0.004) return; const ex = M[i.key] || ''; const base = i.date ? new Date(i.date + 'T00:00:00') : new Date(); out.push({ key: i.key, supplier: sp.name, date: i.date, total: i.total, remaining: i.remaining, explicit: ex, due: ex || iso(addDays(base, Number(P.supDays) || 30)) }); }); });
+    return out.sort((a, b) => String(a.due).localeCompare(String(b.due)));
+  }
+  function model(P) {
+    P = P || params(); const t0 = new Date(); t0.setHours(0, 0, 0, 0); const start = iso(t0);
+    recalculateTreasuryBalances();
+    const cash = round2(state.accounts.reduce((s, a) => s + Number(a.balance || 0), 0));
+    const W = Math.ceil(P.days / 7), wk = [];
+    for (let i = 0; i < W; i++) wk.push({ from: iso(addDays(t0, i * 7)), to: iso(addDays(t0, i * 7 + 6)), inn: 0, sup: 0, exp: 0, notes: [] });
+    const idxOf = ds => Math.floor((new Date(ds + 'T00:00:00') - t0) / 86400000 / 7);
+    let outside = 0, unscheduled = 0;
+    const S = window.__v18 && window.__v18.schedEval;
+    (state.contracts || []).forEach(c => {
+      if (!S) return; const e = S(c); let schedLeft = 0;
+      e.items.forEach(i => {
+        if (i.st === 'paid') return; schedLeft += i.left;
+        const ds = i.overdue ? iso(addDays(t0, P.overdueDays)) : i.due; const k = idxOf(ds);
+        if (k >= 0 && k < W) { wk[k].inn = round2(wk[k].inn + i.left); if (i.overdue) wk[k].notes.push('متأخر'); } else outside = round2(outside + i.left);
+      });
+      const rem = Math.max(0, Number(c.value || 0) - e.paid); unscheduled = round2(unscheduled + Math.max(0, rem - schedLeft));
+    });
+    const invs = supInvoices(); let supDue = 0;
+    invs.forEach(i => { supDue = round2(supDue + i.remaining); const k = Math.max(0, Math.min(idxOf(i.due), 1e6)); if (idxOf(i.due) < 0) { wk[0].sup = round2(wk[0].sup + i.remaining); if (W) wk[0].notes.push('سداد متأخر'); } else if (k < W) wk[k].sup = round2(wk[k].sup + i.remaining); else outside = round2(outside); });
+    const ym = ymOf(t0);
+    recList().forEach(tp => {
+      for (let m = 0; m <= Math.ceil(P.days / 28) + 1; m++) {
+        const d = new Date(t0.getFullYear(), t0.getMonth() + m, Math.min(28, Number(tp.day) || 1)); d.setHours(0, 0, 0, 0);
+        if (d < t0) continue; if (m === 0 && tp.lastDone === ym) continue;
+        const k = idxOf(iso(d)); if (k >= 0 && k < W) wk[k].exp = round2(wk[k].exp + Number(tp.amount || 0));
+      }
+    });
+    const perWeek = Number(P.other || 0) * 12 / 52; wk.forEach(w => { w.exp = round2(w.exp + perWeek); });
+    let bal = cash, min = { v: cash, i: -1 }; wk.forEach((w, i) => { w.open = round2(bal); bal = round2(bal + w.inn - w.sup - w.exp); w.close = bal; if (bal < min.v) min = { v: bal, i }; });
+    return { invs, P, start, cash, weeks: wk, min, outside, unscheduled, supDue, totIn: round2(wk.reduce((s, w) => s + w.inn, 0)), totOut: round2(wk.reduce((s, w) => s + w.sup + w.exp, 0)), end: bal };
+  }
+  window.__v20 = { model, params };
+  window.v20Set = function (k, v) { const P = lsGet(FK, { days: 60, supDays: 30, overdueDays: 14, other: null }); P[k] = (v === '' ? (k === 'other' ? null : P[k]) : Number(v)); lsSet(FK, P); refreshCurrentView(); };
+  window.v20SetDue = function (k, v) { state.settings = state.settings || {}; const m = Object.assign({}, state.settings.supplierDueDates || {}); if (v) m[k] = v; else delete m[k]; state.settings.supplierDueDates = m; saveState(); refreshCurrentView(); };
+  window.v20ResetOther = function () { const P = lsGet(FK, {}); P.other = null; lsSet(FK, P); refreshCurrentView(); };
+  function chart(M) {
+    const w = 640, h = 190, pad = 26, n = M.weeks.length; const vals = M.weeks.map(x => x.close).concat([M.cash, 0]); const mx = Math.max(...vals), mn = Math.min(...vals), rg = (mx - mn) || 1;
+    const y = v => pad + (mx - v) * (h - 2 * pad) / rg, bw = Math.max(8, (w - 2 * pad) / n - 6), x = i => pad + i * ((w - 2 * pad) / n) + 3;
+    return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;direction:ltr" role="img" aria-label="الرصيد المتوقع أسبوعيًا"><line x1="${pad}" x2="${w - pad}" y1="${y(0)}" y2="${y(0)}" stroke="#a8a29e" stroke-dasharray="4 3"/>${M.weeks.map((q, i) => `<rect x="${x(i)}" y="${Math.min(y(q.close), y(0))}" width="${bw}" height="${Math.max(2, Math.abs(y(q.close) - y(0)))}" rx="3" fill="${q.close < 0 ? '#dc2626' : '#2563eb'}"><title>${q.from}: ${num(q.close)}</title></rect><text x="${x(i) + bw / 2}" y="${h - 6}" font-size="9" text-anchor="middle" fill="#78716c">${i + 1}</text>`).join('')}<text x="${pad}" y="12" font-size="10" fill="#57534e">أعلى: ${num(mx)}</text></svg>`;
+  }
+  V5_VIEWS['forecast'] = function () {
+    const M = model(), P = M.P, neg = M.weeks.find(w => w.close < 0);
+    const inp = (k, lbl, extra) => `<label class="text-xs"><span class="block font-bold mb-1">${lbl}</span><input type="number" min="0" value="${esc(P[k])}" onchange="v20Set('${k}',this.value)" class="p-2 border border-stone-300 rounded-lg w-28 ${extra || ''}"></label>`;
+    return `<div class="space-y-4"><div><h2 class="text-xl font-bold text-stone-900">توقّع السيولة</h2><p class="text-xs text-stone-500">تقدير للرصيد النقدي أسبوعًا بأسبوع من الدفعات المجدولة ومستحقات الموردين والمصروفات. بيعتمد على افتراضات تقدر تعدّلها.</p></div>
+    <div class="bg-white border border-stone-200 rounded-2xl p-4 flex flex-wrap gap-4 items-end">
+      <label class="text-xs"><span class="block font-bold mb-1">فترة التوقع</span><select onchange="v20Set('days',this.value)" class="p-2 border border-stone-300 rounded-lg">${[30, 60, 90].map(d => `<option value="${d}" ${P.days === d ? 'selected' : ''}>${d} يوم</option>`).join('')}</select></label>
+      ${inp('supDays', 'سداد الفاتورة بعد (يوم) لو مفيش موعد')}${inp('overdueDays', 'تحصيل المتأخر خلال (يوم)')}${inp('other', 'مصروفات أخرى شهريًا')}
+      <button type="button" onclick="v20ResetOther()" class="${BTN} bg-stone-200">استخدام المتوسط</button></div>
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="bg-white border border-stone-200 rounded-2xl p-4"><div class="text-xs text-stone-500">النقدية الآن</div><div class="text-xl font-black">${num(M.cash)}</div></div>
+      <div class="bg-white border ${M.min.v < 0 ? 'border-rose-300' : 'border-stone-200'} rounded-2xl p-4"><div class="text-xs text-stone-500">أقل رصيد متوقع</div><div class="text-xl font-black ${M.min.v < 0 ? 'text-rose-700' : ''}">${num(M.min.v)}</div><div class="text-[11px] text-stone-500">${M.min.i >= 0 ? 'الأسبوع ' + (M.min.i + 1) + ' (' + M.weeks[M.min.i].from + ')' : 'الآن'}</div></div>
+      <div class="bg-white border border-stone-200 rounded-2xl p-4"><div class="text-xs text-stone-500">تحصيلات متوقعة</div><div class="text-xl font-black text-emerald-700">${num(M.totIn)}</div></div>
+      <div class="bg-white border border-stone-200 rounded-2xl p-4"><div class="text-xs text-stone-500">مدفوعات متوقعة</div><div class="text-xl font-black text-amber-700">${num(M.totOut)}</div></div></div>
+    <div class="rounded-2xl p-4 text-sm font-bold ${neg ? 'bg-rose-50 border border-rose-300 text-rose-800' : 'bg-emerald-50 border border-emerald-200 text-emerald-800'}">${neg ? `⚠ متوقع عجز نقدي بداية من الأسبوع ${M.weeks.indexOf(neg) + 1} (${neg.from}) — الرصيد ${num(neg.close)}. فكّر في تحصيل متأخرات أو تأجيل سداد.` : '✓ السيولة كافية خلال فترة التوقع بحسب الافتراضات الحالية.'}</div>
+    <div class="bg-white border border-stone-200 rounded-2xl p-4">${chart(M)}<div class="text-[10px] text-stone-400">الأعمدة = الرصيد المتوقع آخر كل أسبوع (أحمر = عجز)</div></div>
+    <div class="bg-white rounded-2xl border border-stone-200 overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-right text-xs"><thead><tr class="bg-stone-100 font-bold border-b"><th class="p-3">الأسبوع</th><th class="p-3">من</th><th class="p-3">رصيد أول</th><th class="p-3">تحصيلات</th><th class="p-3">موردين</th><th class="p-3">مصروفات</th><th class="p-3">رصيد آخر</th></tr></thead><tbody class="divide-y divide-stone-100">${M.weeks.map((w, i) => `<tr class="${w.close < 0 ? 'bg-rose-50' : ''}"><td class="p-3 font-bold">${i + 1}</td><td class="p-3">${w.from}</td><td class="p-3">${num(w.open)}</td><td class="p-3 text-emerald-700">${w.inn ? num(w.inn) : '—'}${w.notes.length ? ' <span class="text-[10px] text-rose-700">(' + esc(w.notes[0]) + ')</span>' : ''}</td><td class="p-3">${w.sup ? num(w.sup) : '—'}</td><td class="p-3">${num(w.exp)}</td><td class="p-3 font-bold ${w.close < 0 ? 'text-rose-700' : ''}">${num(w.close)}</td></tr>`).join('')}</tbody></table></div></div>
+    ${M.invs.length ? `<div class="bg-white rounded-2xl border border-stone-200 overflow-hidden"><div class="p-3 font-bold text-sm border-b">فواتير الموردين الآجلة — موعد السداد</div><div class="overflow-x-auto"><table class="w-full text-right text-xs"><thead><tr class="bg-stone-100 font-bold border-b"><th class="p-3">المورد</th><th class="p-3">الفاتورة</th><th class="p-3">المتبقي</th><th class="p-3">موعد السداد</th></tr></thead><tbody class="divide-y divide-stone-100">${M.invs.map(i => `<tr><td class="p-3 font-bold">${esc(i.supplier)}</td><td class="p-3">${esc(i.date)}</td><td class="p-3">${num(i.remaining)}</td><td class="p-3"><input type="date" value="${esc(i.explicit)}" onchange="v20SetDue('${esc(i.key).replace(/'/g, '')}',this.value)" class="p-1.5 border ${i.explicit && i.explicit < iso(new Date()) ? 'border-rose-400' : 'border-stone-300'} rounded-lg">${i.explicit ? '' : ' <span class="text-[10px] text-stone-400">افتراضي: ' + esc(i.due) + '</span>'}</td></tr>`).join('')}</tbody></table></div></div>` : ''}
+    <div class="bg-stone-50 border border-stone-200 rounded-2xl p-4 text-xs text-stone-600 space-y-1"><b>الافتراضات:</b>
+      <div>• التحصيلات من دفعات العقود المجدولة فقط (الدفعة المتأخرة بتتحصّل خلال ${P.overdueDays} يوم من اليوم).</div>
+      <div>• مستحقات الموردين (${num(M.supDue)}) بتُسدَّد في الموعد اللي سجلته لكل فاتورة، وللي من غير موعد: بعد ${P.supDays} يوم من تاريخ الفاتورة. اللي موعده فات بيتحسب في أول أسبوع.</div>
+      <div>• المصروفات = المتكررة المسجّلة + ${num(P.other)} شهريًا مصروفات أخرى (متوسط آخر 3 شهور مطروحًا منه المتكرر، وتقدر تغيّره).</div>
+      <div>• خارج التوقع: متبقي على العملاء بدون جدول دفعات <b>${num(M.unscheduled)}</b>${M.outside > 0.004 ? '، ودفعات بعد فترة التوقع ' + num(M.outside) : ''}، ومشتريات جديدة غير مسجلة.</div></div></div>`;
+  };
+  // تنبيه + قائمة + تقرير
+  { const o = v10Reminders; v10Reminders = function () { const al = o.apply(this, arguments) || []; try { const M = model(Object.assign(params(), { days: 30 })); const neg = M.weeks.find(w => w.close < 0); try { const t = iso(new Date()), od = supInvoices().filter(i => i.explicit && i.explicit <= t); if (od.length) al.unshift(['#d9534f', 'فواتير موردين موعد سدادها حل: ' + od.length + ' (' + num(od.reduce((a, b) => a + b.remaining, 0)) + ')', "navigateTo('forecast')"]); } catch (e) { }
+ if (neg) al.unshift(['#d9534f', 'متوقع عجز سيولة خلال 30 يوم (الأسبوع ' + (M.weeks.indexOf(neg) + 1) + ')', "navigateTo('forecast')"]); } catch (e) { } return al; }; }
+  function addNav() {
+    const sub = $('sub-finance'); if (!sub || $('nav-forecast')) return;
+    const a = document.createElement('a'); a.id = 'nav-forecast'; a.href = '#/forecast'; a.className = 'nav-btn w-full text-right px-3 py-2 text-xs text-stone-600 hover:bg-stone-200/80 rounded-lg'; a.textContent = 'توقّع السيولة';
+    a.addEventListener('click', ev => { if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button === 1) return; ev.preventDefault(); navigateTo('forecast'); });
+    const ps = $('nav-pay-schedule'); if (ps) ps.after(a); else sub.appendChild(a);
+  }
+
+  // ---------------- 2) نسخة احتياطية تلقائية ----------------
+  const AK = 'EBHAAR_AUTOBK_V1', LK = 'EBHAAR_AUTOBK_LOCK';
+  const acfg = () => lsGet(AK, { on: true, days: 7 });
+  const hasData = () => ['customers', 'contracts', 'operations', 'purchases', 'expenses', 'collections', 'suppliers'].some(k => (state[k] || []).length);
+  const modalOpen = () => { const m = $('modalContainer'), s = $('subModalContainer'); return !!((m && m.firstElementChild) || (s && s.firstElementChild)); };
+  function autoCheck(force) {
+    const c = acfg(); if (!c.on && !force) return;
+    if (document.hidden || modalOpen()) return;
+    if (window.EBHAAR_CLOUD && EBHAAR_CLOUD.blocked) return;
+    if (!hasData()) return;
+    const last = v10LastBackup(), age = last ? (Date.now() - new Date(last).getTime()) / 86400000 : Infinity;
+    if (age < c.days) return;
+    try { const l = Number(localStorage.getItem(LK) || 0); if (Date.now() - l < 90000) return; localStorage.setItem(LK, String(Date.now())); } catch (e) { }
+    try { exportApplicationData(); notifyUser('تم تنزيل نسخة احتياطية تلقائية' + (last ? ' (آخر نسخة كانت منذ ' + Math.floor(age) + ' يوم)' : '') + ' — احفظها في مكان آمن.', 'success', 7000); } catch (e) { console.error(e); }
+  }
+  window.v20AutoCheck = autoCheck;
+  setTimeout(autoCheck, 20000); setInterval(autoCheck, 10 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(autoCheck, 3000); });
+  window.v20AutoBkSet = function () { const on = $('v20ab_on').checked, days = Number($('v20ab_d').value) || 7; lsSet(AK, { on, days }); v5CloseSub(); refreshCurrentView(); notifyUser(on ? 'النسخة التلقائية شغّالة كل ' + days + ' يوم' : 'النسخة التلقائية مقفولة', 'success'); };
+  window.v20AutoBkOpen = function () {
+    const c = acfg();
+    v5OpenSub('⚙ النسخة الاحتياطية التلقائية', `<div class="space-y-3 text-xs"><label class="flex items-center gap-2 font-bold"><input type="checkbox" id="v20ab_on" ${c.on ? 'checked' : ''}> نزّل نسخة احتياطية تلقائيًا</label>
+      <label class="block"><span class="block font-bold mb-1">كل كام يوم</span><select id="v20ab_d" class="p-2.5 border border-stone-300 rounded-xl">${[3, 7, 14, 30].map(d => `<option value="${d}" ${c.days === d ? 'selected' : ''}>${d} أيام</option>`).join('')}</select></label>
+      <p class="text-stone-500">الملف بينزل في مجلد التنزيلات لما تفتح الموقع وتكون النسخة الأخيرة أقدم من المدة دي. الإعداد على هذا الجهاز بس. احفظ الملفات على جوجل درايف أو أي مكان تاني.</p>
+      <div class="flex justify-between gap-2 pt-1"><button type="button" onclick="v5CloseSub();exportApplicationData()" class="${BTN} bg-emerald-600 text-white">تنزيل نسخة الآن</button><div class="flex gap-2"><button type="button" onclick="v5CloseSub()" class="${BTN} bg-stone-200">إلغاء</button><button type="button" onclick="v20AutoBkSet()" class="${BTN} bg-deep-blue text-white">حفظ</button></div></div></div>`, 'max-w-md');
+  };
+  { const od = renderDashboardHTML; renderDashboardHTML = function () { let h = od.apply(this, arguments); const c = acfg(); const tag = `<button onclick="v20AutoBkOpen()" class="px-3 py-1.5 rounded-lg font-bold border bg-white border-stone-300 text-stone-700">⚙ تلقائي: ${c.on ? 'كل ' + c.days + ' يوم' : 'مقفول'}</button>`; return h.replace('تنزيل نسخة الآن</button>', 'تنزيل نسخة الآن</button>' + tag); }; }
+  setInterval(() => { try { addNav(); } catch (e) { } }, 1500); addNav();
+})();
+
+// V20.2: إعادة تشغيل «فائض المواقع» مرة واحدة (البيانات لم تُمسح أبدًا)
+(function () {
+  try {
+    if (state && state.settings && !state.settings.v20SurplusOn) {
+      state.settings.modules = state.settings.modules && typeof state.settings.modules === 'object' ? state.settings.modules : {};
+      state.settings.modules.siteSurplus = true; state.settings.v20SurplusOn = true;
+      saveState(); if (typeof v7ApplyModules === 'function') v7ApplyModules();
+    }
+  } catch (e) { console.error('v20 surplus', e); }
+})();
+
+;(function(){try{if('serviceWorker' in navigator&&location.protocol==='https:')window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){})});}catch(e){}})();
 </script>
 
 </body>
