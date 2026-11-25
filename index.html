@@ -617,6 +617,14 @@ button:not(.justify-between) { text-justify: center; justify-content: center !im
   function getSes() { try { return JSON.parse(L.get(SES_K) || 'null'); } catch (e) { return null; } }
   function putSes(s) { if (s && s.access_token) L.set(SES_K, JSON.stringify({ access_token: s.access_token, refresh_token: s.refresh_token, expires_at: s.expires_at, user: s.user })); }
   function clearAll() { L.del(SES_K); L.del(KEY); L.del(ROLE_K); }
+  C.api = function (method, path, body, prefer) {
+    let s = getSes(); if (!s) return { ok: false, status: 401, json: null };
+    if (s.expires_at * 1000 < Date.now() + 60000) { const r = xhr('POST', '/auth/v1/token?grant_type=refresh_token', { refresh_token: s.refresh_token }); if (r.status === 200 && r.json && r.json.access_token) { putSes(r.json); s = getSes(); } }
+    const x = new XMLHttpRequest(); x.open(method, base + path, false);
+    x.setRequestHeader('apikey', cfg.key); x.setRequestHeader('Authorization', 'Bearer ' + s.access_token); x.setRequestHeader('Content-Type', 'application/json'); x.setRequestHeader('Prefer', prefer || 'return=representation');
+    try { x.send(body === undefined ? null : JSON.stringify(body)); } catch (e) { return { ok: false, status: 0, json: null }; }
+    let j = null; try { j = JSON.parse(x.responseText); } catch (e) { } return { ok: x.status >= 200 && x.status < 300, status: x.status, json: j, text: x.responseText };
+  };
   C.verifyPassword = function (pw) { if (!C.user || !C.user.email || !pw) return false; const r = xhr('POST', '/auth/v1/token?grant_type=password', { email: C.user.email, password: pw }); return r.status === 200 && !!(r.json && r.json.access_token); };
   C.logout = function () { const go = () => { clearAll(); location.reload(); }; if (C.pending != null || C.inflight) { if (!confirm('يوجد تعديل لم يُرسل بعد للسيرفر. الخروج الآن سيفقده. هل تخرج؟')) return; } go(); };
 
@@ -660,11 +668,18 @@ button:not(.justify-between) { text-justify: center; justify-content: center !im
   const prof = pr.json[0]; C.user = { id: ses.user.id, email: ses.user.email, name: prof.full_name }; C.role = prof.role;
   if (!prof.active) { msgGate('حسابك موقوف. تواصل مع المدير لتفعيله.', true); return; }
   if (prof.must_change_password) { pwGate(ses); return; }
-  if (prof.role !== 'admin' && prof.role !== 'accountant') { msgGate('هذا الحساب (' + (prof.role === 'registrar' ? 'مسجّل' : 'مستخدم تقارير') + ') سيعمل بعد تفعيل واجهته على السيرفر. حاليًا الدخول للمدير والمحاسب فقط.', true); return; }
-  const st = xhr('GET', '/rest/v1/app_state?select=data,version&id=eq.1', undefined, ses.access_token);
-  if (st.status !== 200) { msgGate('تعذّر تحميل البيانات من السيرفر (' + st.status + '). أعد تحميل الصفحة.', true); return; }
-  if (st.json && st.json[0]) { L.set(KEY, JSON.stringify(st.json[0].data)); C.version = Number(st.json[0].version); }
-  else { C.version = 0; C.needsInitialUpload = true; }   // السيرفر فاضي: أول حفظ يرفع البيانات الحالية
+  if (prof.role !== 'admin' && prof.role !== 'accountant' && prof.role !== 'registrar') { msgGate('هذا الحساب (مستخدم تقارير) سيعمل بعد تفعيل واجهته على السيرفر. حاليًا الدخول للمدير والمحاسب والمسجّل فقط.', true); return; }
+  if (prof.role === 'registrar') {
+    const pb = xhr('GET', '/rest/v1/published?select=payload,published_at&key=eq.lookups', undefined, ses.access_token);
+    if (pb.status !== 200) { msgGate('تعذّر تحميل البيانات من السيرفر (' + pb.status + '). أعد تحميل الصفحة.', true); return; }
+    if (!pb.json || !pb.json[0] || !pb.json[0].payload) { msgGate('بيانات المسجّل لسه ما اتجهزتش. اطلب من المدير يفتح الموقع مرة واحدة ثم أعد المحاولة.', true); return; }
+    L.set(KEY, JSON.stringify(pb.json[0].payload)); C.version = 0; C.isRegistrar = true; C.publishedAt = pb.json[0].published_at;
+  } else {
+    const st = xhr('GET', '/rest/v1/app_state?select=data,version&id=eq.1', undefined, ses.access_token);
+    if (st.status !== 200) { msgGate('تعذّر تحميل البيانات من السيرفر (' + st.status + '). أعد تحميل الصفحة.', true); return; }
+    if (st.json && st.json[0]) { L.set(KEY, JSON.stringify(st.json[0].data)); C.version = Number(st.json[0].version); }
+    else { C.version = 0; C.needsInitialUpload = true; }   // السيرفر فاضي: أول حفظ يرفع البيانات الحالية
+  }
   L.set(ROLE_K, JSON.stringify({ role: prof.role }));
 
   // ---------- الحفظ التلقائي ----------
@@ -700,7 +715,7 @@ button:not(.justify-between) { text-justify: center; justify-content: center !im
       clearTimeout(retry); retry = setTimeout(flush, 5000);
     } finally { C.inflight = false; if (C.pending != null && !C.conflict && !retry) flush(); }
   }
-  C.save = function (json) { if (C.conflict) return; C.pending = json; status('busy', 'جارٍ الحفظ…'); clearTimeout(timer); clearTimeout(retry); retry = null; timer = setTimeout(flush, 500); };
+  C.save = function (json) { if (C.conflict || C.isRegistrar) return; C.pending = json; status('busy', 'جارٍ الحفظ…'); clearTimeout(timer); clearTimeout(retry); retry = null; timer = setTimeout(flush, 500); };
   C.flushNow = flush;
   window.addEventListener('beforeunload', e => { if (C.pending != null || C.inflight) { e.preventDefault(); e.returnValue = ''; } });
   document.addEventListener('DOMContentLoaded', () => status('ok', '✓ متصل بالسيرفر'));
@@ -14026,9 +14041,9 @@ function v12Role() {
 }
 function v12IsAdmin() { const r = v12Role().role; return r === 'admin' || r === 'accountant'; }
 function v12Cfg() {
-  if (!state.settings) return { mode: 'auto', editWindowMin: 10 };
-  if (!state.settings.approval || typeof state.settings.approval !== 'object') state.settings.approval = { mode: 'auto', editWindowMin: 10 };
-  const a = state.settings.approval; if (a.mode !== 'manual') a.mode = 'auto'; if (!(Number(a.editWindowMin) >= 0)) a.editWindowMin = 10;
+  if (!state.settings) return { mode: 'auto', editWindowMin: 30 };
+  if (!state.settings.approval || typeof state.settings.approval !== 'object') state.settings.approval = { mode: 'auto', editWindowMin: 30 };
+  const a = state.settings.approval; if (a.mode !== 'manual') a.mode = 'auto'; if (!(Number(a.editWindowMin) >= 0)) a.editWindowMin = 30; if (a.editWindowMin > 30) a.editWindowMin = 30;
   return a;
 }
 function v12Ensure(st) { st = st || state; if (!Array.isArray(st.inbox)) st.inbox = []; if (!Array.isArray(st.notifications)) st.notifications = []; }
@@ -14128,6 +14143,7 @@ function v12Intercept(name, opts) {
     try { ret = orig.apply(this, arguments); } finally { v12Capturing = false; }
     const d = v12Diff(before, state);
     if (v12DeltaEmpty(d)) return ret;                       // فشل التحقق: لا شيء تغيّر
+    if (typeof v21Submit === 'function' && v21Submit(before, d, opts)) return ret;
     const who = v12Role();
     if (v12Cfg().mode !== 'manual') {                       // وضع تلقائي: يُنفَّذ مباشرة مع ختم المسجّل
       ['purchases', 'collections', 'expenses', 'supplierPayments', 'salesInvoices'].forEach(k => (d.added[k] || []).forEach(r => { const rec = state[k].find(x => x.id === r.id); if (rec) { rec.createdBy = who.name; rec.approvedBy = 'تلقائي'; } }));
@@ -14243,7 +14259,7 @@ function v12SaveEditRequest(e) {
 function v12SaveCfg() {
   if (!v12IsAdmin()) return v12Deny('الإعدادات للأدمن فقط.');
   const a = v12Cfg(); a.mode = document.getElementById('v12_mode').value === 'manual' ? 'manual' : 'auto';
-  const w = Number(document.getElementById('v12_win').value); a.editWindowMin = w >= 0 ? w : 10;
+  const w = Number(document.getElementById('v12_win').value); a.editWindowMin = w >= 0 ? Math.min(30, w) : 30;
   logAudit('تغيير نمط الاعتماد', a.mode + ' / مهلة ' + a.editWindowMin); saveState(); refreshCurrentView(); notifyUser('تم حفظ إعدادات الاعتماد', 'success');
 }
 function v12SetRole(role) {
@@ -14263,7 +14279,7 @@ V5_VIEWS['approvals'] = function () {
   return `<div class="space-y-5"><div class="flex items-center justify-between flex-wrap gap-2"><div><h2 class="text-xl font-bold text-stone-900">${admin ? 'طلبات الاعتماد' : 'طلباتي'}</h2><p class="text-xs text-stone-500">${admin ? 'راجع القيود الناتجة ثم اعتمد لترحيلها للدفاتر.' : `حركاتك تظهر هنا حتى يعتمدها الأدمن. يمكنك سحب الطلب وإعادة تسجيله خلال ${cfg.editWindowMin} دقائق.`}</p></div>
    ${!admin ? '<button class="px-4 py-2 bg-deep-blue text-white rounded-xl text-xs font-bold" onclick="v12OpenEditRequest()">+ طلب تعديل / حذف</button>' : ''}</div>
    ${admin ? `<div class="bg-white rounded-2xl border border-stone-200 p-4 text-xs flex flex-wrap items-end gap-4"><div><label class="block font-bold mb-1">اعتماد حركات المسجّل</label><select id="v12_mode" class="p-2 border border-stone-300 rounded-xl"><option value="auto" ${cfg.mode === 'auto' ? 'selected' : ''}>تلقائي (تُرحَّل فورًا)</option><option value="manual" ${cfg.mode === 'manual' ? 'selected' : ''}>يدوي (بعد موافقتي)</option></select></div>
-   <div><label class="block font-bold mb-1">مهلة تعديل المسجّل (دقائق)</label><input id="v12_win" type="number" min="0" value="${cfg.editWindowMin}" class="w-24 p-2 border border-stone-300 rounded-xl"></div><button class="px-4 py-2 bg-emerald-700 text-white rounded-xl font-bold" onclick="v12SaveCfg()">حفظ</button></div>` : ''}
+   <div><label class="block font-bold mb-1">مهلة تعديل المسجّل (دقائق)</label><input id="v12_win" type="number" min="0" max="30" value="${cfg.editWindowMin}" class="w-24 p-2 border border-stone-300 rounded-xl"></div><button class="px-4 py-2 bg-emerald-700 text-white rounded-xl font-bold" onclick="v12SaveCfg()">حفظ</button></div>` : ''}
    <div class="bg-white rounded-2xl border border-stone-200 p-3 text-xs">بانتظار الاعتماد: <b>${pend}</b></div>
    <div class="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-right text-xs"><thead><tr class="bg-stone-100 text-stone-700 font-bold border-b border-stone-200"><th class="p-3">الطلب</th><th class="p-3">الوقت</th><th class="p-3">المسجّل</th><th class="p-3">التفاصيل</th><th class="p-3">الحالة</th><th class="p-3">إجراء</th></tr></thead><tbody class="divide-y divide-stone-100">
    ${list.length ? list.map(row).join('') : '<tr><td colspan="6" class="p-5 text-center text-stone-400">لا توجد طلبات</td></tr>'}</tbody></table></div></div></div>`;
@@ -14287,7 +14303,7 @@ v5AddNavButton('sub-system', 'approvals', 'طلبات الاعتماد / طلب�
   const oN = navigateTo;
   navigateTo = function (view, filter) {
     const r = v12Role().role;
-    if (allowed[r] && !allowed[r].includes(view)) { v12Deny('هذه الصفحة غير متاحة لدورك.'); view = 'dashboard'; }
+    if (allowed[r] && !(typeof v21ViewOk === 'function' ? v21ViewOk(r, view) : allowed[r].includes(view))) { v12Deny('هذه الصفحة غير متاحة لدورك.'); view = 'dashboard'; }
     return oN.call(this, view, filter);
   };
   const oD = renderDashboardHTML;
@@ -14307,11 +14323,11 @@ v5AddNavButton('sub-system', 'approvals', 'طلبات الاعتماد / طلب�
 function v12ApplyRole() {
   const r = v12Role().role;
   document.body.classList.remove('v12-role-admin', 'v12-role-accountant', 'v12-role-registrar', 'v12-role-viewer'); document.body.classList.add('v12-role-' + r);
-  const ok = { registrar: id => ['nav-purchases', 'nav-suppliers', 'nav-supplier-payments', 'nav-collections', 'nav-expenses', 'nav-sales-invoices', 'nav-approvals', 'nav-dashboard'].includes(id), viewer: () => true, admin: () => true, accountant: () => true }[r];
+  const ok = { registrar: id => (typeof v21NavOk === 'function' ? v21NavOk(id) : ['nav-purchases', 'nav-suppliers', 'nav-supplier-payments', 'nav-collections', 'nav-expenses', 'nav-sales-invoices', 'nav-approvals', 'nav-dashboard'].includes(id)), viewer: () => true, admin: () => true, accountant: () => true }[r];
   document.querySelectorAll('#mainSidebar [id^="sub-"] button, #mainSidebar > * button').forEach(b => {
     if (b.getAttribute('onclick') && /toggleSubmenu/.test(b.getAttribute('onclick'))) return;
     let show = true;
-    if (r === 'registrar') show = (b.id && ok(b.id)) || /openAdd(Purchase|Collection|SupplierPayment|Expense)/.test(b.getAttribute('onclick') || '');
+    if (r === 'registrar') show = (b.id && ok(b.id)) || (typeof v21BtnOk === 'function' ? v21BtnOk(b.getAttribute('onclick') || '') : /openAdd(Purchase|Collection|SupplierPayment|Expense)/.test(b.getAttribute('onclick') || ''));
     if (r === 'viewer') show = !(/openAdd|v11SaleOpen|v11OpenSupplierDiscount|v12OpenEditRequest/.test(b.getAttribute('onclick') || '')) && !['nav-approvals', 'nav-supplier-discount'].includes(b.id);
     if (r === 'accountant' || r === 'admin') show = true;
     b.style.display = show ? '' : 'none';
@@ -15495,6 +15511,215 @@ function v13TransferSave(e) {
       saveState(); if (typeof v7ApplyModules === 'function') v7ApplyModules();
     }
   } catch (e) { console.error('v20 surplus', e); }
+})();
+
+// ============================================================
+// V21 — صلاحيات المسجّل الحقيقية (ربط بالسيرفر) + المسميات الوظيفية والصلاحيات
+//  • المسجّل: يدخل بحسابه، يرى نسخة بيانات بلا أرباح، وتسجيلاته تذهب كطلبات (inbox) للمراجعة.
+//  • الأدمن: يراجع يدويًا أو تلقائيًا (بعد مهلة التعديل)، وينشر نسخة المسجّل.
+//  • صفحة «الصلاحيات»: مسميات وظيفية + الصفحات المسموحة لكل مسمى + ربط المستخدمين بها.
+// لا تغيير في الحسابات أو في شكل بيانات الأدمن (يضاف فقط settings.access).
+// ============================================================
+(function () {
+  const C = window.EBHAAR_CLOUD;
+  const cloud = !!(C && C.user && !C.blocked && C.api);
+  const reg = cloud && C.role === 'registrar';
+  const fin = cloud && (C.role === 'admin' || C.role === 'accountant');
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const modalOpen = () => { const m = $('modalContainer'), s2 = $('subModalContainer'); return !!((m && m.firstElementChild) || (s2 && s2.firstElementChild)); };
+
+  // ---------- 1) المسميات والصفحات ----------
+  const CATALOG = [['purchases', 'فواتير الشراء'], ['suppliers', 'الموردين'], ['supplier-payments', 'دفعات الموردين'], ['collections', 'التحصيلات'], ['expenses', 'المصروفات'], ['sales-invoices', 'فواتير البيع'],
+    ['customers', 'العملاء'], ['contracts', 'العقود'], ['treasury', 'الخزينة'], ['stock-list', 'المخزون ومصدر كل صنف'], ['pay-schedule', 'جدول الدفعات'], ['supply-report', 'التوريدات والنواقص']];
+  const DEF_PAGES = CATALOG.map(c => c[0]);
+  const NAME2PAGE = { openAddPurchaseModal: 'purchases', openAddCollectionModal: 'collections', openAddSupplierPaymentModal: 'supplier-payments', openAddExpenseModal: 'expenses', v11SaleOpen: 'sales-invoices' };
+  function acc() {
+    state.settings = state.settings || {};
+    let a = state.settings.access; if (!a || typeof a !== 'object') a = state.settings.access = { titles: [], users: {}, seq: 1 };
+    if (!Array.isArray(a.titles)) a.titles = []; if (!a.users || typeof a.users !== 'object') a.users = {};
+    if (!a.titles.some(t => t.id === 'T-registrar')) a.titles.unshift({ id: 'T-registrar', name: 'مسجّل', base: 'registrar', pages: DEF_PAGES.slice(), builtin: true });
+    return a;
+  }
+  const myUid = () => (cloud && C.user && C.user.id) || 'local';
+  function myTitle() { const a = acc(); return a.titles.find(t => t.id === a.users[myUid()]) || a.titles.find(t => t.id === 'T-registrar'); }
+  const pagesOf = () => new Set(['dashboard', 'approvals'].concat(myTitle().pages || []));
+  window.v21ViewOk = (r, view) => r !== 'registrar' ? true : pagesOf().has(view);
+  window.v21NavOk = id => { const p = pagesOf(); return id === 'nav-dashboard' || id === 'nav-approvals' || [...p].some(x => 'nav-' + x === id); };
+  window.v21BtnOk = oc => { const m = /(openAdd\w+|v11SaleOpen)/.exec(oc || ''); const pg = m && NAME2PAGE[m[1]]; return !!(pg && pagesOf().has(pg)); };
+  Object.keys(NAME2PAGE).forEach(n => { const o = window[n]; if (typeof o !== 'function') return; window[n] = function () { if (v12Role().role === 'registrar' && !pagesOf().has(NAME2PAGE[n])) return v12Deny('هذه العملية غير متاحة لمسماك الوظيفي.'); return o.apply(this, arguments); }; });
+  { const o = v12Role; v12Role = function () { const r = o.apply(this, arguments); if (cloud && C.role === r.role && C.user.name) r.name = C.user.name; return r; }; }
+  { const od = renderDashboardHTML; renderDashboardHTML = function () {
+      let h = od.apply(this, arguments); if (v12Role().role !== 'registrar') return h;
+      const d = document.createElement('div'); d.innerHTML = h; const P = pagesOf();
+      d.querySelectorAll('button[onclick]').forEach(b => { const m = /(openAdd\w+|v11SaleOpen)/.exec(b.getAttribute('onclick') || ''); if (m && NAME2PAGE[m[1]] && !P.has(NAME2PAGE[m[1]])) b.remove(); });
+      if (reg && d.firstElementChild) { const f = document.createElement('div'); f.className = 'text-xs text-stone-500 flex items-center gap-2 flex-wrap'; f.innerHTML = 'آخر تحديث للبيانات: <b>' + esc(C.publishedAt ? new Date(C.publishedAt).toLocaleString('ar-EG') : '') + '</b> <button type="button" class="px-3 py-1.5 rounded-lg font-bold bg-stone-200 text-stone-800" onclick="v21Refresh()">تحديث البيانات</button>'; d.firstElementChild.appendChild(f); }
+      return d.innerHTML; }; }
+
+  // ---------- 1.5) إخفاء أي أثر للأرباح عن المسجّل (أعمدة/جمل) ----------
+  if (v12Role().role === 'registrar') {
+    let busy = false;
+    const scrub = root => {
+      if (!root || !root.querySelectorAll) return;
+      root.querySelectorAll('table').forEach(t => {
+        const ths = [...t.querySelectorAll('thead th')]; const idx = ths.findIndex(h => /ربح|أرباح/.test(h.textContent)); if (idx < 0) return;
+        t.querySelectorAll('tr').forEach(tr => { if ([...tr.children].some(c => c.colSpan > 1)) return; const c = tr.children[idx]; if (c) c.remove(); });
+      });
+      root.querySelectorAll('option').forEach(o => { if (/ربح|أرباح|مسحوبات المالك/.test(o.textContent)) o.remove(); });
+      root.querySelectorAll('#v11ModeSel').forEach(e => { const p = e.closest('div'); if (p) p.remove(); });
+      root.querySelectorAll('p,span,small,div,li,h4,h5,label,strong,b,i').forEach(e => { if (!e.children.length && /ربح|أرباح|الارباح/.test(e.textContent)) e.remove(); });
+    };
+    const run = () => { if (busy) return; busy = true; try { scrub(document.getElementById('mainContentArea')); scrub(document.getElementById('modalContainer')); scrub(document.getElementById('subModalContainer')); } finally { busy = false; } };
+    const start = () => { new MutationObserver(run).observe(document.body, { childList: true, subtree: true }); run(); };
+    if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
+  }
+
+  // ---------- 2) صفحة الصلاحيات (للأدمن) ----------
+  const ROLE_L = { admin: 'مدير', accountant: 'محاسب', registrar: 'مسجّل', viewer: 'مستخدم تقارير' };
+  V5_VIEWS['access'] = function () {
+    const a = acc(); let users = null;
+    if (fin) { const r = C.api('GET', '/rest/v1/profiles?select=user_id,full_name,role,active&order=created_at'); if (r.ok && Array.isArray(r.json)) users = r.json; }
+    const tOpts = sel => a.titles.map(t => `<option value="${esc(t.id)}" ${t.id === sel ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
+    const cards = a.titles.map(t => `<div class="bg-white rounded-2xl border border-stone-200 p-4 space-y-3">
+      <div class="flex flex-wrap items-center gap-2"><input id="v21n_${esc(t.id)}" value="${esc(t.name)}" class="p-2 border border-stone-300 rounded-xl font-bold text-sm w-48" ${t.builtin ? '' : ''}>
+        <span class="text-[11px] text-stone-500">يدخل بحساب «مسجّل» — تسجيلاته تروح للمراجعة</span></div>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">${CATALOG.map(c => `<label class="flex items-center gap-2 p-2 rounded-lg border border-stone-200 bg-stone-50"><input type="checkbox" class="v21c_${esc(t.id)}" value="${c[0]}" ${(t.pages || []).includes(c[0]) ? 'checked' : ''}>${c[1]}</label>`).join('')}</div>
+      <div class="text-[11px] text-stone-500">الرئيسية وطلباتي ظاهرين دايمًا. الصفحة اللي مش معلّم عليها مبتظهرش له خالص.</div>
+      <div class="flex gap-2"><button type="button" onclick="v21TitleSave('${esc(t.id)}')" class="px-4 py-2 bg-deep-blue text-white rounded-xl text-xs font-bold">حفظ</button>${t.builtin ? '' : `<button type="button" onclick="v21TitleDel('${esc(t.id)}')" class="px-4 py-2 bg-rose-100 text-rose-800 border border-rose-300 rounded-xl text-xs font-bold">حذف المسمى</button>`}</div></div>`).join('');
+    const ur = users ? users.map(u => `<tr><td class="p-3 font-bold">${esc(u.full_name || '—')}</td><td class="p-3">${esc(ROLE_L[u.role] || u.role)}</td><td class="p-3">${u.active ? '✓ فعّال' : '✗ موقوف'}</td><td class="p-3">${u.role === 'registrar' ? `<select onchange="v21UserTitle('${esc(u.user_id)}',this.value)" class="p-2 border border-stone-300 rounded-lg">${tOpts(a.users[u.user_id] || 'T-registrar')}</select>` : '<span class="text-stone-400">—</span>'}</td></tr>`).join('')
+      : `<tr><td colspan="4" class="p-4 text-stone-500">${cloud ? 'تعذّر تحميل المستخدمين.' : 'قائمة المستخدمين تظهر بعد الربط بالسيرفر. (وضع التجربة المحلي: مسمى المسجّل التجريبي:</td></tr><tr><td colspan="4" class="p-3"><select onchange="v21UserTitle(\'local\',this.value)" class="p-2 border border-stone-300 rounded-lg">' + tOpts(a.users.local || 'T-registrar') + '</select> )'}</td></tr>`;
+    return `<div class="space-y-5"><div><h2 class="text-xl font-bold text-stone-900">الصلاحيات والمسميات الوظيفية</h2><p class="text-xs text-stone-500">اعمل مسمى (مثلاً: مسجّل مشتريات)، حدّد الصفحات اللي يشوفها، وبعدين اربط الموظف بالمسمى. التغيير بيوصل للموظف أول ما يفتح الموقع أو يضغط «تحديث البيانات».</p></div>
+      ${cloud && fin ? `<div class="text-[11px] ${C.publishOk === false ? 'text-rose-700 font-bold' : 'text-stone-500'}">${C.publishOk === false ? '⚠ تعذّر نشر بيانات المسجّل — راجع الاتصال أو بلّغني.' : (C.publishAt ? '✓ آخر نشر لبيانات الموظفين: ' + new Date(C.publishAt).toLocaleTimeString('ar-EG') : 'بيانات الموظفين بتتنشر تلقائيًا بعد كل حفظ.')}</div>` : ''}
+      <div class="flex items-center gap-2"><button type="button" onclick="v21TitleAdd()" class="px-4 py-2 bg-emerald-700 text-white rounded-xl text-xs font-bold">+ مسمى وظيفي جديد</button></div>
+      ${cards}
+      <div class="bg-white rounded-2xl border border-stone-200 overflow-hidden"><div class="p-3 font-bold text-sm border-b">المستخدمون</div><div class="overflow-x-auto"><table class="w-full text-right text-xs"><thead><tr class="bg-stone-100 font-bold border-b"><th class="p-3">الاسم</th><th class="p-3">النوع</th><th class="p-3">الحالة</th><th class="p-3">المسمى الوظيفي</th></tr></thead><tbody class="divide-y divide-stone-100">${ur}</tbody></table></div>
+      <div class="p-3 text-[11px] text-stone-500 border-t">إنشاء حساب موظف جديد بيتم من Supabase (Authentication ثم Add user) ثم تفعيله كمسجّل — هنوضحها لك خطوة خطوة.</div></div>
+      <div class="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-[11px] text-amber-900">إخفاء الصفحات هنا على مستوى الواجهة: الموظف مبيشوفش الصفحة ولا يقدر يفتحها. أما الأرباح فمش موجودة أصلًا في البيانات اللي بتتبعت له.</div></div>`;
+  };
+  v5AddNavButton('sub-system', 'access', 'الصلاحيات والمسميات الوظيفية');
+  window.v21TitleSave = id => { const a = acc(), t = a.titles.find(x => x.id === id); if (!t) return; const n = ($('v21n_' + id) || {}).value || ''; if (!n.trim()) return failValidation('اكتب اسم المسمى.'); t.name = n.trim(); t.pages = [...document.querySelectorAll('.v21c_' + id)].filter(c => c.checked).map(c => c.value); logAudit('تعديل مسمى وظيفي', t.name); saveState(); refreshCurrentView(); notifyUser('تم حفظ المسمى والصلاحيات', 'success'); };
+  window.v21TitleAdd = () => { const a = acc(); a.seq = (Number(a.seq) || 1) + 1; const t = { id: 'T-' + a.seq, name: 'مسمى جديد ' + (a.seq - 1), base: 'registrar', pages: ['purchases', 'suppliers'] }; a.titles.push(t); logAudit('إضافة مسمى وظيفي', t.name); saveState(); refreshCurrentView(); };
+  window.v21TitleDel = id => { const a = acc(), t = a.titles.find(x => x.id === id); if (!t || t.builtin) return; if (!confirm('حذف المسمى «' + t.name + '»؟ الموظفين المرتبطين به يرجعوا لمسمى «مسجّل».')) return; a.titles = a.titles.filter(x => x.id !== id); Object.keys(a.users).forEach(u => { if (a.users[u] === id) delete a.users[u]; }); logAudit('حذف مسمى وظيفي', t.name); saveState(); refreshCurrentView(); };
+  window.v21UserTitle = (uid, tid) => { const a = acc(); if (tid === 'T-registrar') delete a.users[uid]; else a.users[uid] = tid; logAudit('ربط مستخدم بمسمى', uid + ' → ' + tid); saveState(); notifyUser('تم ربط المستخدم بالمسمى', 'success'); };
+
+  if (!cloud) return;
+
+  // ---------- 3) المسجّل: إرسال الطلبات والسحب والتحديث ----------
+  const SEEN = 'EBHAAR_REQ_SEEN';
+  const seenSet = () => { try { return new Set(JSON.parse(localStorage.getItem(SEEN) || '[]')); } catch (e) { return new Set(); } };
+  const mapRow = (r, names) => ({ id: 'S-' + r.id, serverId: r.id, kind: r.kind === 'tx' ? 'tx' : 'editRequest', title: r.title, summary: r.summary, note: r.note || (r.payload && r.payload.note) || '', by: (names && names[r.created_by]) || (r.payload && r.payload.by) || 'المسجّل', role: 'registrar', createdAt: r.created_at, status: r.status, reason: r.reason || '', delta: r.payload && r.payload.delta });
+  function fetchMine() {
+    const r = C.api('GET', '/rest/v1/inbox?select=id,created_at,created_by,kind,title,summary,note,reason,status,payload&order=id.desc&limit=100');
+    if (r.ok && Array.isArray(r.json)) { C.myRows = r.json; v12Ensure(); state.inbox = r.json.map(x => mapRow(x)); }
+    return r.ok;
+  }
+  if (reg) {
+    window.v21Submit = function (before, d, opts) {
+      const counters = state.idCounters; Object.keys(state).forEach(k => { delete state[k]; }); Object.assign(state, before); state.idCounters = counters;
+      const r = C.api('POST', '/rest/v1/inbox', { kind: 'tx', title: (opts && opts.title) || 'عملية', summary: v12Summary(d), payload: { delta: d, by: C.user.name || '' } });
+      try { saveState(); } catch (e) { }
+      if (!r.ok) { notifyUser('تعذّر إرسال الطلب (' + (r.status || 'لا يوجد اتصال') + ') — لم يُسجَّل شيء. حاول مرة أخرى.', 'error', 7000); return true; }
+      try { closeModal(); v5CloseSub(); } catch (e) { } fetchMine(); refreshCurrentView();
+      notifyUser('أُرسل للمراجعة. تقدر تسحبه وتعدّله خلال ' + v12Cfg().editWindowMin + ' دقيقة من «طلباتي».', 'success', 6000); return true;
+    };
+    { const o = v12Withdraw; v12Withdraw = function (id) {
+        const it = (state.inbox || []).find(x => x.id === id); if (!it || !it.serverId) return o.apply(this, arguments);
+        if (!v12CanWithdraw(it)) return void failValidation('انتهت مهلة التعديل — أرسل طلب تعديل للمدير.');
+        const r = C.api('PATCH', '/rest/v1/inbox?id=eq.' + it.serverId + '&status=eq.pending', { status: 'withdrawn' });
+        if (!r.ok || !(r.json && r.json.length)) return void failValidation('تعذّر السحب (ربما اتراجع أو انتهت المهلة).');
+        fetchMine(); refreshCurrentView(); notifyUser('تم سحب الطلب — سجّله من جديد بعد التصحيح', 'info'); }; }
+    { const o = v12SaveEditRequest; v12SaveEditRequest = function (e) {
+        if (e && e.preventDefault) e.preventDefault(); const ref = ($('v12e_ref') || {}).value.trim(), note = ($('v12e_note') || {}).value.trim(); if (!ref || !note) return;
+        const r = C.api('POST', '/rest/v1/inbox', { kind: 'edit_request', title: 'طلب تعديل: ' + ref, summary: note.slice(0, 200), note, payload: { ref, note, by: C.user.name || '' } });
+        if (!r.ok) return void notifyUser('تعذّر الإرسال (' + (r.status || 'لا يوجد اتصال') + ')', 'error', 6000);
+        v5CloseSub(); fetchMine(); refreshCurrentView(); notifyUser('وصل طلب التعديل للمدير', 'success'); }; }
+    { const o = V5_VIEWS['approvals']; V5_VIEWS['approvals'] = function () { fetchMine(); const h = o.apply(this, arguments); try { localStorage.setItem(SEEN, JSON.stringify((C.myRows || []).filter(x => x.status !== 'pending').map(x => x.id + ':' + x.status))); } catch (e) { } return h; }; }
+    { const o = v10Reminders; v10Reminders = function () {
+        const al = o.apply(this, arguments) || []; try { const sn = seenSet(); (C.myRows || []).filter(x => x.status !== 'pending' && x.status !== 'withdrawn' && !sn.has(x.id + ':' + x.status)).slice(0, 5).forEach(x => al.push([x.status === 'rejected' ? '#d9534f' : '#3aa76d', (x.status === 'rejected' ? 'تم رفض طلبك: ' + x.summary + ' — ' + (x.reason || '') : 'تم اعتماد طلبك: ' + x.summary), "navigateTo('approvals')"])); } catch (e) { } return al; }; }
+    window.v21Refresh = function () {
+      const r = C.api('GET', '/rest/v1/published?select=payload,published_at&key=eq.lookups');
+      if (!r.ok || !r.json || !r.json[0]) return notifyUser('تعذّر التحديث الآن.', 'error');
+      try { localStorage.setItem('EBHAAR_SYSTEM_STATE_V4_FINAL', JSON.stringify(r.json[0].payload)); } catch (e) { } location.reload();
+    };
+    const poll = () => {
+      try { fetchMine(); if (typeof v10TopRefresh === 'function') v10TopRefresh(); } catch (e) { }
+      try { const r = C.api('GET', '/rest/v1/published?select=published_at&key=eq.lookups'); if (r.ok && r.json && r.json[0] && C.publishedAt && new Date(r.json[0].published_at) > new Date(C.publishedAt)) { if (!modalOpen() && document.visibilityState === 'visible') window.v21Refresh(); else if (!$('v21Fresh')) { const b = document.createElement('div'); b.id = 'v21Fresh'; b.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:9998;background:#1e3a5f;color:#fff;padding:8px 14px;border-radius:12px;font-size:12px;font-weight:700'; b.innerHTML = 'فيه بيانات أحدث <button onclick="v21Refresh()" style="background:#fff;color:#1e3a5f;border:0;border-radius:8px;padding:2px 10px;margin-inline-start:8px;font-weight:800">تحديث</button>'; document.body.appendChild(b); } } } catch (e) { }
+    };
+    setTimeout(poll, 2500); setInterval(poll, 90000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(poll, 800); });
+    return;
+  }
+
+  // ---------- 4) الأدمن/المحاسب: نشر نسخة المسجّل + استلام الطلبات + الاعتماد ----------
+  if (!fin) return;
+  try { const A = (state.settings.approval = state.settings.approval || { mode: 'auto', editWindowMin: 30 }); if (!state.settings.v21Window) { A.editWindowMin = Math.min(30, Number(A.editWindowMin) || 30); if (A.editWindowMin === 10) A.editWindowMin = 30; state.settings.v21Window = true; saveState(); } } catch (e) { }
+  function snapshot() {
+    const s = JSON.parse(JSON.stringify(state)); ['journalEntries', 'auditLog', 'trash', 'inbox', 'notifications'].forEach(k => { delete s[k]; });
+    (s.expenses || []).forEach(e => { if (e.category === 'ProfitWithdrawal') { e.category = 'Misc'; e.glAccountId = ''; } });
+    return s;
+  }
+  let pubT = null;
+  function publishNow() {
+    try {
+      const row = { key: 'lookups', payload: snapshot(), published_at: new Date().toISOString() };
+      let r = C.api('POST', '/rest/v1/published?on_conflict=key', row, 'resolution=merge-duplicates,return=minimal');
+      if (!r.ok) { const u = C.api('PATCH', '/rest/v1/published?key=eq.lookups', { payload: row.payload, published_at: row.published_at }); if (u.ok && u.json && u.json.length) r = u; else r = C.api('POST', '/rest/v1/published', row, 'return=minimal'); }
+      C.publishOk = r.ok; C.publishAt = r.ok ? Date.now() : C.publishAt; if (!r.ok) console.warn('publish failed', r.status, r.text);
+    } catch (e) { C.publishOk = false; console.error(e); }
+  }
+  function schedulePublish() { clearTimeout(pubT); pubT = setTimeout(publishNow, 5000); }
+  { const o = saveState; saveState = function () { const r = o.apply(this, arguments); schedulePublish(); return r; }; }
+  window.v21PublishNow = publishNow;
+  setTimeout(publishNow, 2500);
+
+  let names = null; const nameOf = () => { if (names) return names; const r = C.api('GET', '/rest/v1/profiles?select=user_id,full_name'); names = {}; if (r.ok && Array.isArray(r.json)) r.json.forEach(p => { names[p.user_id] = p.full_name; }); return names; };
+  function pushStatus(it) {
+    if (!it.serverId) return true;
+    const body = it.status === 'rejected' ? { status: 'rejected', reason: it.reason || '' } : { status: 'approved' };
+    const r = C.api('PATCH', '/rest/v1/inbox?id=eq.' + it.serverId + '&status=eq.pending', body, 'return=minimal');
+    it.srvRetry = !r.ok; return r.ok;
+  }
+  function reid(it) {
+    if (!it || it.reided || !it.delta || !it.delta.added) return; const used = new Set(); let txt = JSON.stringify(it.delta), changed = false;
+    Object.keys(it.delta.added).forEach(k => it.delta.added[k].forEach(rec => {
+      if (!rec || !rec.id || !(state[k] || []).some(x => x.id === rec.id)) return; const m = /^(.*)-(\d+)$/.exec(rec.id); if (!m) return;
+      let n = parseInt((nextId(m[1]).split('-').pop()), 10); let nid = m[1] + '-' + String(n).padStart(m[2].length, '0');
+      while (used.has(nid) || (state[k] || []).some(x => x.id === nid)) { n++; nid = m[1] + '-' + String(n).padStart(m[2].length, '0'); }
+      used.add(nid); txt = txt.split('"' + rec.id + '"').join('"' + nid + '"'); changed = true;
+    }));
+    if (changed) it.delta = JSON.parse(txt); it.reided = true;
+  }
+  { const o = v12Approve; v12Approve = function (id) { const it = state.inbox.find(x => x.id === id); if (it && it.kind === 'tx' && it.status === 'pending') reid(it); const r = o.apply(this, arguments); if (it && it.serverId && it.status === 'approved') { pushStatus(it); saveState(); } return r; }; }
+  { const o = v12Reject; v12Reject = function (id) { const it = state.inbox.find(x => x.id === id); const r = o.apply(this, arguments); if (it && it.serverId && it.status === 'rejected') { pushStatus(it); saveState(); } return r; }; }
+  function autoApprove(it) {
+    reid(it); const snap = JSON.stringify(state);
+    v12Apply(state, it.delta, { createdBy: it.by, approvedBy: 'تلقائي', approvedAt: new Date().toISOString(), requestId: it.id });
+    if (!v12Sane(state)) { const s2 = JSON.parse(snap); Object.keys(state).forEach(k => { delete state[k]; }); Object.assign(state, s2); const again = state.inbox.find(x => x.id === it.id); if (again) again.autoFail = true; return false; }
+    it.status = 'approved'; it.reviewedBy = 'تلقائي'; it.reviewedAt = new Date().toISOString();
+    logAudit('اعتماد تلقائي', it.id + ' (' + it.by + '): ' + (it.summary || it.title)); saveState(); pushStatus(it); saveState(); return true;
+  }
+  let syncing = false;
+  function sync() {
+    if (syncing) return; syncing = true;
+    try {
+      const r = C.api('GET', '/rest/v1/inbox?select=id,created_at,created_by,kind,title,summary,note,reason,status,payload&order=id.desc&limit=300'); if (!r.ok || !Array.isArray(r.json)) return;
+      v12Ensure(); let changed = false;
+      r.json.forEach(row => {
+        const loc = state.inbox.find(x => x.serverId === row.id);
+        if (!loc) { if (row.status === 'pending') { state.inbox.unshift(mapRow(row, nameOf())); changed = true; } return; }
+        if (loc.status === 'pending' && row.status === 'withdrawn') { loc.status = 'withdrawn'; loc.reviewedAt = new Date().toISOString(); changed = true; }
+        else if ((loc.status === 'approved' || loc.status === 'rejected') && row.status === 'pending') { if (pushStatus(loc)) changed = true; }
+      });
+      if (changed) saveState();
+      const cfg = v12Cfg(); let applied = 0;
+      if (cfg.mode === 'auto' && !modalOpen()) state.inbox.filter(i => i.status === 'pending' && i.kind === 'tx' && i.serverId && !i.autoFail && (Date.now() - new Date(i.createdAt).getTime()) >= cfg.editWindowMin * 60000).forEach(i => { if (autoApprove(i)) applied++; });
+      if (applied) { notifyUser('تم اعتماد ' + applied + ' طلب من المسجّل تلقائيًا', 'success', 5000); if (!modalOpen()) refreshCurrentView(); }
+      if (typeof v10TopRefresh === 'function') v10TopRefresh();
+    } catch (e) { console.error('v21 sync', e); } finally { syncing = false; }
+  }
+  window.v21Sync = sync;
+  setTimeout(sync, 3500); setInterval(sync, 60000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(sync, 800); });
 })();
 
 ;(function(){try{if('serviceWorker' in navigator&&location.protocol==='https:')window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){})});}catch(e){}})();
