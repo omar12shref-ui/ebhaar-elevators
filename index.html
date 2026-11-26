@@ -15806,6 +15806,14 @@ function v13TransferSave(e) {
   var st=document.createElement('style');
   st.textContent=
   '#v22More,#v22Panel{display:none}'+
+  '#v22More{display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:12px;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.1);color:#fff;font-size:20px;font-weight:800;cursor:pointer;flex-shrink:0;line-height:1;padding:0}'+
+  '#v22Panel.open{display:grid;position:fixed;top:64px;left:12px;width:min(440px,calc(100vw - 24px));z-index:60;grid-template-columns:repeat(5,1fr);gap:8px;padding:10px;background:#fff;border:1px solid #e6e0d6;border-radius:16px;box-shadow:0 18px 40px -16px rgba(20,48,79,.5)}'+
+  '#v22Panel>*{display:flex!important;flex-direction:column;align-items:center;justify-content:center;gap:4px;height:62px!important;width:auto!important;min-width:0;border-radius:12px;background:#f3efe7!important;color:#1e3a5f!important;border:0!important;font-size:20px;padding:4px!important;cursor:pointer}'+
+  '#v22Panel>*::after{content:attr(data-l);font-size:11px;font-weight:700;white-space:nowrap}'+
+  '#v22Panel>*>*{pointer-events:none}'+
+  '#v22Panel .v10-bk-t,#v22Panel small{display:none!important}'+
+  '#v18HdSearch{display:none!important}'+
+  '@media (max-width:767px){#v22Panel.open{left:8px;right:8px;top:56px;width:auto}#v18HdSearch{display:flex!important}}'+
   '@media (max-width:767px){'+
   'header.hd-ready{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;padding:8px 10px!important;gap:6px!important;min-height:0!important}'+
   'header.hd-ready>div{min-width:0}'+
@@ -15816,15 +15824,9 @@ function v13TransferSave(e) {
   'header.hd-ready .hd-start{gap:6px!important;flex-shrink:0}'+
   '.hd-conn{display:none!important}'+
   '.hd-user{height:36px!important;padding:0 4px!important}.hd-ut{display:none!important}'+
-  '#v22More{display:flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:12px;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.1);color:#fff;font-size:20px;font-weight:800;cursor:pointer;flex-shrink:0;line-height:1;padding:0}'+
-  '#v22Panel.open{display:grid;position:fixed;top:56px;left:8px;right:8px;z-index:60;grid-template-columns:repeat(5,1fr);gap:8px;padding:10px;background:#fff;border:1px solid #e6e0d6;border-radius:16px;box-shadow:0 18px 40px -16px rgba(20,48,79,.5)}'+
-  '#v22Panel>*{display:flex!important;flex-direction:column;align-items:center;justify-content:center;gap:4px;height:62px!important;width:auto!important;min-width:0;border-radius:12px;background:#f3efe7!important;color:#1e3a5f!important;border:0!important;font-size:20px;padding:4px!important;cursor:pointer}'+
-  '#v22Panel>*::after{content:attr(data-l);font-size:11px;font-weight:700;white-space:nowrap}'+
-  '#v22Panel>*>*{pointer-events:none}'+
-  '#v22Panel .v10-bk-t{display:none!important}'+
   '}';
   document.head.appendChild(st);
-  var mq=window.matchMedia('(max-width:767px)'),ids=['v19Hd','v18HdSearch','v18HdXls','v18HdPrint','v10TopBackup'],
+  var mq=window.matchMedia('(min-width:0px)'),ids=['v19Hd','v18HdSearch','v18HdXls','v18HdPrint','v10TopBackup'],
       lab={v19Hd:'تقرير',v18HdSearch:'بحث',v18HdXls:'إكسل',v18HdPrint:'طباعة',v10TopBackup:'نسخة'};
   var home={};
   function els(){return ids.map(function(i){return document.getElementById(i)}).filter(Boolean)}
@@ -15835,7 +15837,7 @@ function v13TransferSave(e) {
     if(!more){
       more=document.createElement('button');more.type='button';more.id='v22More';more.textContent='⋯';more.setAttribute('aria-label','المزيد');
       pn=document.createElement('div');pn.id='v22Panel';
-      more.onclick=function(e){e.stopPropagation();pn.classList.toggle('open')};
+      more.onclick=function(e){e.stopPropagation();pn.classList.toggle('open');if(window.innerWidth>=768){var r=more.getBoundingClientRect();pn.style.left=Math.max(8,r.right-440)+'px';pn.style.top=(r.bottom+8)+'px'}else{pn.style.left='';pn.style.top=''}};
       pn.onclick=function(){setTimeout(function(){pn.classList.remove('open')},0)};
       document.addEventListener('click',function(e){if(pn.classList.contains('open')&&!pn.contains(e.target))pn.classList.remove('open')});
       start.appendChild(more);document.body.appendChild(pn);
