@@ -15813,7 +15813,7 @@ function v13TransferSave(e) {
   '#v22Panel>*>*{pointer-events:none}'+
   '#v22Panel .v10-bk-t,#v22Panel small{display:none!important}'+
   '#v18HdSearch{display:none!important}'+
-  '@media (max-width:767px){#v22Panel.open{left:8px;right:8px;top:56px;width:auto}#v18HdSearch{display:flex!important}}'+
+  '@media (max-width:767px){#v22Req table{min-width:0!important}#v22Req table,#v22Req tbody,#v22Req tr,#v22Req td{display:block}#v22Req thead{display:none}#v22Req tr{border-bottom:1px solid #eee;padding:8px 0}#v22Req td{width:auto!important;min-width:0!important;padding:3px 0!important}#v22Panel.open{left:8px;right:8px;top:56px;width:auto}#v18HdSearch{display:flex!important}}'+
   '@media (max-width:767px){'+
   'header.hd-ready{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;padding:8px 10px!important;gap:6px!important;min-height:0!important}'+
   'header.hd-ready>div{min-width:0}'+
@@ -15860,6 +15860,36 @@ function v13TransferSave(e) {
   (mq.addEventListener?mq.addEventListener('change',place):mq.addListener(place));
   // الأزرار قد تُبنى متأخراً
   setInterval(function(){if(mq.matches&&document.getElementById('v22Panel'))place()},2000);
+  }catch(e){}
+})();
+
+/* ===== V22: جدول طلبات المراجعة في رئيسية الأدمن ===== */
+;(function(){
+  try{
+  if(typeof renderDashboardHTML!=='function')return;
+  var od=renderDashboardHTML;
+  renderDashboardHTML=function(){
+    var h=od.apply(this,arguments);
+    try{
+      if(typeof v12IsAdmin!=='function'||!v12IsAdmin())return h;
+      var E=function(x){return String(x==null?'':x).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})};
+      var list=(state.inbox||[]).filter(function(i){return i.status==='pending'}).sort(function(a,b){return new Date(b.createdAt)-new Date(a.createdAt)});
+      var rows=list.slice(0,8).map(function(i){
+        var st=i.applied?'<span style="color:#b7791f;font-weight:700">منفّذ — بانتظار مراجعتك</span>':'<span style="color:#d9534f;font-weight:700">بانتظار موافقتك</span>';
+        var tm='';try{tm=new Date(i.createdAt).toLocaleString('ar-EG',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}catch(e){}
+        var ok=i.applied?'تمام':'موافقة';
+        return '<tr><td style="font-weight:700">'+E(i.summary||i.title)+'</td><td class="dx-mute">'+E(i.by)+'<div style="font-size:.72rem">'+E(tm)+'</div></td><td>'+st+'</td>'+
+          '<td style="min-width:200px;width:210px"><div style="display:flex;gap:6px;flex-wrap:nowrap"><button type="button" class="dx-act" style="padding:5px 10px;font-size:.78rem" onclick="event.stopPropagation();v12Review(\''+E(i.id)+'\')">عرض</button> '+
+          '<button type="button" class="dx-act" style="padding:5px 10px;font-size:.78rem;background:#1f8f63;color:#fff;border-color:#1f8f63" onclick="event.stopPropagation();v12Approve(\''+E(i.id)+'\')">'+ok+'</button> '+
+          '<button type="button" class="dx-act" style="padding:5px 10px;font-size:.78rem;background:#fff;color:#d9534f;border-color:#d9534f" onclick="event.stopPropagation();v12Review(\''+E(i.id)+'\')">رفض</button></div></td></tr>';
+      }).join('');
+      var card='<div class="dx-row"><section class="dx-card" id="v22Req" style="flex:1 1 100%;min-width:0"><div style="display:flex;align-items:center"><div class="dx-h" style="flex-grow:1">طلبات المسجّل للمراجعة'+(list.length?' <span style="background:#d9534f;color:#fff;border-radius:999px;padding:1px 9px;font-size:.78rem">'+list.length+'</span>':'')+'</div><a class="dx-mute" style="font-size:.8rem;cursor:pointer" onclick="navigateTo(\'approvals\')">عرض الكل</a></div>'+
+        '<div style="overflow-x:auto"><table class="dx-tbl" style="margin-top:6px;min-width:520px"><thead><tr><th>الطلب</th><th>المسجّل / الوقت</th><th>الحالة</th><th style="width:210px">إجراء</th></tr></thead><tbody>'+(rows||'<tr><td colspan="4" class="dx-mute" style="text-align:center;padding:18px">لا توجد طلبات بانتظار المراجعة ✓</td></tr>')+'</tbody></table></div></section></div>';
+      var k='<div class="dx-mute" style="text-align:center;font-size:.75rem;padding:6px 0">';
+      var ix=h.lastIndexOf(k);
+      return ix>=0?h.slice(0,ix)+card+h.slice(ix):h;
+    }catch(e){return h}
+  };
   }catch(e){}
 })();
 
