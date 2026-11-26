@@ -14043,7 +14043,7 @@ function v12IsAdmin() { const r = v12Role().role; return r === 'admin' || r === 
 function v12Cfg() {
   if (!state.settings) return { mode: 'auto', editWindowMin: 30 };
   if (!state.settings.approval || typeof state.settings.approval !== 'object') state.settings.approval = { mode: 'auto', editWindowMin: 30 };
-  const a = state.settings.approval; if (a.mode !== 'manual') a.mode = 'auto'; if (!(Number(a.editWindowMin) >= 0)) a.editWindowMin = 30; if (a.editWindowMin > 30) a.editWindowMin = 30;
+  const a = state.settings.approval; if (a.mode !== 'manual' && a.mode !== 'review') a.mode = 'auto'; if (!(Number(a.editWindowMin) >= 0)) a.editWindowMin = 30; if (a.editWindowMin > 30) a.editWindowMin = 30;
   return a;
 }
 function v12Ensure(st) { st = st || state; if (!Array.isArray(st.inbox)) st.inbox = []; if (!Array.isArray(st.notifications)) st.notifications = []; }
@@ -14114,6 +14114,12 @@ function v12Summary(d) {
   if (d.added.expenses) parts.push(`مصروف ${f(d.added.expenses.reduce((s, p) => s + Number(p.amount || 0), 0))}`);
   if (d.added.supplierPayments) parts.push(`دفعة تاجر ${f(d.added.supplierPayments.reduce((s, p) => s + Number(p.amount || 0), 0))}`);
   if (d.added.salesInvoices) parts.push(`فاتورة بيع ${f(d.added.salesInvoices.reduce((s, p) => s + Number(p.amount || 0), 0))}`);
+  const nm = a => a.map(x => x.name || x.code || x.id).join('، ');
+  if (d.added.customers) parts.push('عميل جديد: ' + nm(d.added.customers));
+  if (d.added.contracts) parts.push('عقد جديد (' + d.added.contracts.length + ')' + (d.added.contracts[0] && d.added.contracts[0].customerId ? ' للعميل ' + ((state.customers || []).find(c => c.id === d.added.contracts[0].customerId) || {}).name : ''));
+  if (d.added.suppliers) parts.push('مورد جديد: ' + nm(d.added.suppliers));
+  if (d.added.products) parts.push('صنف جديد: ' + nm(d.added.products));
+  if (d.added.operations) parts.push('عملية جديدة: ' + nm(d.added.operations));
   return parts.join(' + ') || 'عملية';
 }
 
@@ -14167,6 +14173,12 @@ function v12Intercept(name, opts) {
   v12Intercept('saveCollectionForm', { title: 'تحصيل', noEdit: true });
   v12Intercept('saveSupplierPaymentForm', { title: 'دفعة تاجر', noEdit: true });
   v12Intercept('v11SaleSave', { title: 'بيع مباشر لعميل' });
+  v12Intercept('saveCustomerForm', { title: 'عميل جديد' });
+  v12Intercept('saveContractForm', { title: 'عقد جديد' });
+  v12Intercept('saveSupplierForm', { title: 'مورد جديد', noEdit: true });
+  v12Intercept('saveProductForm', { title: 'صنف جديد' });
+  v12Intercept('v5SaveNewProduct', { title: 'صنف جديد' });
+  v12Intercept('saveOperationForm', { title: 'عملية جديدة', noEdit: true });
   v12Intercept('saveExpenseForm', { title: 'مصروف', noEdit: true, check: () => { const c = document.getElementById('exp_category'); return c && c.value === 'ProfitWithdrawal' ? 'سحب الأرباح للأدمن/المحاسب فقط.' : ''; } });
   v12Intercept('v10SaveGeneral', { title: 'مصروف عام', noEdit: true, check: () => {
     const a = document.getElementById('gx_acc'); if (!a) return '';
@@ -14174,7 +14186,7 @@ function v12Intercept(name, opts) {
     const acc = state.chartOfAccounts.find(x => x.id === a.value); if (!acc) return '';
     return REG_ROUTINE(acc.code) ? '' : 'هذا الحساب (أصول/إهلاك/تسويات) للمحاسب فقط — المسموح للمسجّل المصروفات الروتينية.'; } });
   // حجب كل ما عداها لغير الأدمن/المحاسب
-  const exclude = new Set(['v10SavePurchase', 'saveCollectionForm', 'saveSupplierPaymentForm', 'v11SaleSave', 'saveExpenseForm', 'v10SaveGeneral', 'saveState', 'v12Approve', 'v12Reject', 'v12Withdraw', 'v12SaveEditRequest', 'v12SaveCfg', 'v12SetRole']);
+  const exclude = new Set(['saveCustomerForm', 'saveContractForm', 'saveSupplierForm', 'saveProductForm', 'v5SaveNewProduct', 'saveOperationForm', 'v10SavePurchase', 'saveCollectionForm', 'saveSupplierPaymentForm', 'v11SaleSave', 'saveExpenseForm', 'v10SaveGeneral', 'saveState', 'v12Approve', 'v12Reject', 'v12Withdraw', 'v12SaveEditRequest', 'v12SaveCfg', 'v12SetRole']);
   const re = /^(save\w*Form|save\w+|v\d+Save\w*|executeSafeDelete|delete\w+|v\d+Delete\w+|confirmImport|v11Complete\w*|v11Undo\w*|v11SetMode|v11SaveSupplierDiscount)$/;
   Object.getOwnPropertyNames(window).forEach(n => {
     if (exclude.has(n) || !re.test(n) || typeof window[n] !== 'function' || /^(saveState|saveSettings\w*|saveUi\w*|saveTheme\w*|saveLocal\w*)$/.test(n)) return;
@@ -14258,7 +14270,7 @@ function v12SaveEditRequest(e) {
 }
 function v12SaveCfg() {
   if (!v12IsAdmin()) return v12Deny('الإعدادات للأدمن فقط.');
-  const a = v12Cfg(); a.mode = document.getElementById('v12_mode').value === 'manual' ? 'manual' : 'auto';
+  const a = v12Cfg(); { const mv = document.getElementById('v12_mode').value; a.mode = (mv === 'manual' || mv === 'review') ? mv : 'auto'; }
   const w = Number(document.getElementById('v12_win').value); a.editWindowMin = w >= 0 ? Math.min(30, w) : 30;
   logAudit('تغيير نمط الاعتماد', a.mode + ' / مهلة ' + a.editWindowMin); saveState(); refreshCurrentView(); notifyUser('تم حفظ إعدادات الاعتماد', 'success');
 }
@@ -14271,14 +14283,14 @@ function v12SetRole(role) {
 V5_VIEWS['approvals'] = function () {
   v12Ensure(); const who = v12Role(), admin = v12IsAdmin(), cfg = v12Cfg();
   const list = admin ? state.inbox : state.inbox.filter(i => i.by === who.name);
-  const st = { pending: ['قيد الانتظار', 'bg-amber-100 text-amber-800'], approved: ['معتمد', 'bg-emerald-100 text-emerald-800'], rejected: ['مرفوض', 'bg-rose-100 text-rose-800'], withdrawn: ['مسحوب', 'bg-stone-200 text-stone-700'] };
+  const st = { pending: ['قيد المراجعة', 'bg-amber-100 text-amber-800'], approved: ['معتمد', 'bg-emerald-100 text-emerald-800'], rejected: ['مرفوض', 'bg-rose-100 text-rose-800'], withdrawn: ['مسحوب', 'bg-stone-200 text-stone-700'] };
   const pend = list.filter(i => i.status === 'pending').length;
   const row = i => `<tr class="hover:bg-stone-50 align-top"><td class="p-3 font-bold">${i.id}</td><td class="p-3">${formatDateTime ? formatDateTime(i.createdAt) : ''}</td><td class="p-3">${v12Esc(i.by)}</td><td class="p-3"><div class="font-bold">${v12Esc(i.summary || i.title)}</div>${i.note ? `<div class="text-stone-500">${v12Esc(i.note)}</div>` : ''}${i.reason ? `<div class="text-rose-700 font-bold mt-1">${i.status === 'rejected' ? 'سبب الرفض: ' : 'ملاحظة: '}${v12Esc(i.reason)}</div>` : ''}${i.reviewedBy ? `<div class="text-[10px] text-stone-400">${v12Esc(i.reviewedBy)}</div>` : ''}</td>
     <td class="p-3"><span class="px-2 py-1 rounded-lg font-bold ${st[i.status][1]}">${st[i.status][0]}</span></td>
     <td class="p-3 whitespace-nowrap">${admin && i.status === 'pending' ? `<button class="px-3 py-1.5 bg-deep-blue text-white rounded-lg font-bold" onclick="v12Review('${i.id}')">مراجعة</button>` : ''}${!admin && v12CanWithdraw(i) ? `<button class="px-3 py-1.5 bg-amber-100 text-amber-900 border border-amber-300 rounded-lg font-bold" onclick="v12Withdraw('${i.id}')">سحب وإعادة التسجيل</button>` : ''}</td></tr>`;
   return `<div class="space-y-5"><div class="flex items-center justify-between flex-wrap gap-2"><div><h2 class="text-xl font-bold text-stone-900">${admin ? 'طلبات الاعتماد' : 'طلباتي'}</h2><p class="text-xs text-stone-500">${admin ? 'راجع القيود الناتجة ثم اعتمد لترحيلها للدفاتر.' : `حركاتك تظهر هنا حتى يعتمدها الأدمن. يمكنك سحب الطلب وإعادة تسجيله خلال ${cfg.editWindowMin} دقائق.`}</p></div>
    ${!admin ? '<button class="px-4 py-2 bg-deep-blue text-white rounded-xl text-xs font-bold" onclick="v12OpenEditRequest()">+ طلب تعديل / حذف</button>' : ''}</div>
-   ${admin ? `<div class="bg-white rounded-2xl border border-stone-200 p-4 text-xs flex flex-wrap items-end gap-4"><div><label class="block font-bold mb-1">اعتماد حركات المسجّل</label><select id="v12_mode" class="p-2 border border-stone-300 rounded-xl"><option value="auto" ${cfg.mode === 'auto' ? 'selected' : ''}>تلقائي (تُرحَّل فورًا)</option><option value="manual" ${cfg.mode === 'manual' ? 'selected' : ''}>يدوي (بعد موافقتي)</option></select></div>
+   ${admin ? `<div class="bg-white rounded-2xl border border-stone-200 p-4 text-xs flex flex-wrap items-end gap-4"><div><label class="block font-bold mb-1">اعتماد حركات المسجّل</label><select id="v12_mode" class="p-2 border border-stone-300 rounded-xl"><option value="review" ${cfg.mode === 'review' ? 'selected' : ''}>مراجعة لاحقة (تُنفَّذ فورًا وأراجعها بعدين)</option><option value="auto" ${cfg.mode === 'auto' ? 'selected' : ''}>تلقائي (بعد مهلة التعديل)</option><option value="manual" ${cfg.mode === 'manual' ? 'selected' : ''}>يدوي (بعد موافقتي)</option></select></div>
    <div><label class="block font-bold mb-1">مهلة تعديل المسجّل (دقائق)</label><input id="v12_win" type="number" min="0" max="30" value="${cfg.editWindowMin}" class="w-24 p-2 border border-stone-300 rounded-xl"></div><button class="px-4 py-2 bg-emerald-700 text-white rounded-xl font-bold" onclick="v12SaveCfg()">حفظ</button></div>` : ''}
    <div class="bg-white rounded-2xl border border-stone-200 p-3 text-xs">بانتظار الاعتماد: <b>${pend}</b></div>
    <div class="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-right text-xs"><thead><tr class="bg-stone-100 text-stone-700 font-bold border-b border-stone-200"><th class="p-3">الطلب</th><th class="p-3">الوقت</th><th class="p-3">المسجّل</th><th class="p-3">التفاصيل</th><th class="p-3">الحالة</th><th class="p-3">إجراء</th></tr></thead><tbody class="divide-y divide-stone-100">
@@ -15531,14 +15543,16 @@ function v13TransferSave(e) {
 
   // ---------- 1) المسميات والصفحات ----------
   const CATALOG = [['purchases', 'فواتير الشراء'], ['suppliers', 'الموردين'], ['supplier-payments', 'دفعات الموردين'], ['collections', 'التحصيلات'], ['expenses', 'المصروفات'], ['sales-invoices', 'فواتير البيع'],
-    ['customers', 'العملاء'], ['contracts', 'العقود'], ['treasury', 'الخزينة'], ['stock-list', 'المخزون ومصدر كل صنف'], ['pay-schedule', 'جدول الدفعات'], ['supply-report', 'التوريدات والنواقص']];
+    ['customers', 'العملاء'], ['contracts', 'العقود'], ['treasury', 'الخزينة'], ['stock-list', 'المخزون ومصدر كل صنف'], ['pay-schedule', 'جدول الدفعات'], ['supply-report', 'التوريدات والنواقص'], ['operations', 'العمليات'], ['master-products', 'الأصناف']];
   const DEF_PAGES = CATALOG.map(c => c[0]);
-  const NAME2PAGE = { openAddPurchaseModal: 'purchases', openAddCollectionModal: 'collections', openAddSupplierPaymentModal: 'supplier-payments', openAddExpenseModal: 'expenses', v11SaleOpen: 'sales-invoices' };
+  const NAME2PAGE = { openAddPurchaseModal: 'purchases', openAddCollectionModal: 'collections', openAddSupplierPaymentModal: 'supplier-payments', openAddExpenseModal: 'expenses', v11SaleOpen: 'sales-invoices', openAddCustomerModal: 'customers', openAddContractModal: 'contracts', openAddOperationModal: 'operations', openAddSupplierModal: 'suppliers', openAddProductModal: 'master-products' };
+  const EXTRA_BTN = [['openAddCustomerModal()', 'عميل جديد'], ['openAddContractModal()', 'عقد جديد'], ['openAddOperationModal()', 'عملية جديدة'], ['openAddSupplierModal()', 'مورد جديد'], ['openAddProductModal()', 'صنف جديد']];
   function acc() {
     state.settings = state.settings || {};
     let a = state.settings.access; if (!a || typeof a !== 'object') a = state.settings.access = { titles: [], users: {}, seq: 1 };
     if (!Array.isArray(a.titles)) a.titles = []; if (!a.users || typeof a.users !== 'object') a.users = {};
     if (!a.titles.some(t => t.id === 'T-registrar')) a.titles.unshift({ id: 'T-registrar', name: 'مسجّل', base: 'registrar', pages: DEF_PAGES.slice(), builtin: true });
+    if (!a.v21b) { const b = a.titles.find(t => t.id === 'T-registrar'); if (b) { b.pages = Array.from(new Set((b.pages || []).concat(DEF_PAGES))); a.v21b = true; } }
     return a;
   }
   const myUid = () => (cloud && C.user && C.user.id) || 'local';
@@ -15548,11 +15562,13 @@ function v13TransferSave(e) {
   window.v21NavOk = id => { const p = pagesOf(); return id === 'nav-dashboard' || id === 'nav-approvals' || [...p].some(x => 'nav-' + x === id); };
   window.v21BtnOk = oc => { const m = /(openAdd\w+|v11SaleOpen)/.exec(oc || ''); const pg = m && NAME2PAGE[m[1]]; return !!(pg && pagesOf().has(pg)); };
   Object.keys(NAME2PAGE).forEach(n => { const o = window[n]; if (typeof o !== 'function') return; window[n] = function () { if (v12Role().role === 'registrar' && !pagesOf().has(NAME2PAGE[n])) return v12Deny('هذه العملية غير متاحة لمسماك الوظيفي.'); return o.apply(this, arguments); }; });
+  { const od2 = window.openOperationDetailModal; if (typeof od2 === 'function') window.openOperationDetailModal = function () { if (v12Role().role === 'registrar') return v12Deny('تفاصيل العمليات للمدير فقط.'); return od2.apply(this, arguments); }; }
   { const o = v12Role; v12Role = function () { const r = o.apply(this, arguments); if (cloud && C.role === r.role && C.user.name) r.name = C.user.name; return r; }; }
   { const od = renderDashboardHTML; renderDashboardHTML = function () {
       let h = od.apply(this, arguments); if (v12Role().role !== 'registrar') return h;
       const d = document.createElement('div'); d.innerHTML = h; const P = pagesOf();
       d.querySelectorAll('button[onclick]').forEach(b => { const m = /(openAdd\w+|v11SaleOpen)/.exec(b.getAttribute('onclick') || ''); if (m && NAME2PAGE[m[1]] && !P.has(NAME2PAGE[m[1]])) b.remove(); });
+      { const grid = [...d.querySelectorAll('.grid')].find(g => g.querySelector('button[onclick]')); if (grid) EXTRA_BTN.forEach(([oc, lb]) => { const nmf = /(openAdd\w+)/.exec(oc)[1]; if (NAME2PAGE[nmf] && P.has(NAME2PAGE[nmf]) && !grid.querySelector('button[onclick="' + oc + '"]')) { const b = document.createElement('button'); b.setAttribute('onclick', oc); b.className = 'p-5 bg-white border border-stone-200 rounded-2xl shadow-sm hover:shadow-md font-bold text-deep-blue text-sm'; b.textContent = lb; grid.appendChild(b); } }); }
       if (reg && d.firstElementChild) { const f = document.createElement('div'); f.className = 'text-xs text-stone-500 flex items-center gap-2 flex-wrap'; f.innerHTML = 'آخر تحديث للبيانات: <b>' + esc(C.publishedAt ? new Date(C.publishedAt).toLocaleString('ar-EG') : '') + '</b> <button type="button" class="px-3 py-1.5 rounded-lg font-bold bg-stone-200 text-stone-800" onclick="v21Refresh()">تحديث البيانات</button>'; d.firstElementChild.appendChild(f); }
       return d.innerHTML; }; }
 
@@ -15565,9 +15581,15 @@ function v13TransferSave(e) {
         const ths = [...t.querySelectorAll('thead th')]; const idx = ths.findIndex(h => /ربح|أرباح/.test(h.textContent)); if (idx < 0) return;
         t.querySelectorAll('tr').forEach(tr => { if ([...tr.children].some(c => c.colSpan > 1)) return; const c = tr.children[idx]; if (c) c.remove(); });
       });
+      root.querySelectorAll('input[id*="rofit"],select[id*="rofit"]').forEach(e => { const c = e.closest('div'); if (c) c.style.display = 'none'; });
       root.querySelectorAll('option').forEach(o => { if (/ربح|أرباح|مسحوبات المالك/.test(o.textContent)) o.remove(); });
       root.querySelectorAll('#v11ModeSel').forEach(e => { const p = e.closest('div'); if (p) p.remove(); });
-      root.querySelectorAll('p,span,small,div,li,h4,h5,label,strong,b,i').forEach(e => { if (!e.children.length && /ربح|أرباح|الارباح/.test(e.textContent)) e.remove(); });
+      const PR = /ربح|أرباح|الارباح/;
+      [...root.querySelectorAll('p,span,small,div,li,h4,h5,label,strong,b,i,button,a,h1,h2,h3')].forEach(e => {
+        if (!e.isConnected) return; const own = [...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('');
+        if (!PR.test(own)) return; let tg = e; const pa = e.parentElement;
+        if (!/^(BUTTON|A)$/.test(e.tagName) && !e.children.length && pa && pa.children.length <= 3 && (pa.innerText || '').length < 70 && !/^(TR|TBODY|TABLE|FORM|BODY|MAIN|SECTION)$/.test(pa.tagName) && pa.id !== 'mainContentArea' && !/modalContainer/.test(pa.id)) tg = pa;
+        if (tg.querySelector && tg.querySelector('input,select,textarea,button')) tg.style.display = 'none'; else tg.remove(); });
     };
     const run = () => { if (busy) return; busy = true; try { scrub(document.getElementById('mainContentArea')); scrub(document.getElementById('modalContainer')); scrub(document.getElementById('subModalContainer')); } finally { busy = false; } };
     const start = () => { new MutationObserver(run).observe(document.body, { childList: true, subtree: true }); run(); };
@@ -15614,20 +15636,29 @@ function v13TransferSave(e) {
     return r.ok;
   }
   if (reg) {
+    function overlayPending() {
+      const rows = (C.myRows || []).filter(r => r.status === 'pending' && r.kind === 'tx' && r.payload && r.payload.delta).sort((a, b) => a.id - b.id);
+      let any = false;
+      rows.forEach(r => {
+        const d = r.payload.delta, ad = d.added || {}, ks = Object.keys(ad); if (!ks.length) return;
+        let have = 0, miss = 0; ks.forEach(k => ad[k].forEach(rec => { if ((state[k] || []).some(x => x.id === rec.id)) have++; else miss++; }));
+        if (have === 0 && miss > 0) { v12Apply(state, d, { createdBy: C.user.name, pendingReview: true }); any = true; }
+      });
+      if (any) { try { saveState(); } catch (e) { } }
+    }
     window.v21Submit = function (before, d, opts) {
-      const counters = state.idCounters; Object.keys(state).forEach(k => { delete state[k]; }); Object.assign(state, before); state.idCounters = counters;
       const r = C.api('POST', '/rest/v1/inbox', { kind: 'tx', title: (opts && opts.title) || 'عملية', summary: v12Summary(d), payload: { delta: d, by: C.user.name || '' } });
-      try { saveState(); } catch (e) { }
-      if (!r.ok) { notifyUser('تعذّر إرسال الطلب (' + (r.status || 'لا يوجد اتصال') + ') — لم يُسجَّل شيء. حاول مرة أخرى.', 'error', 7000); return true; }
+      if (!r.ok) { const counters = state.idCounters; Object.keys(state).forEach(k => { delete state[k]; }); Object.assign(state, before); state.idCounters = counters; try { saveState(); } catch (e) { } notifyUser('تعذّر إرسال الطلب (' + (r.status || 'لا يوجد اتصال') + ') — لم يُسجَّل شيء. حاول مرة أخرى.', 'error', 7000); return true; }
       try { closeModal(); v5CloseSub(); } catch (e) { } fetchMine(); refreshCurrentView();
-      notifyUser('أُرسل للمراجعة. تقدر تسحبه وتعدّله خلال ' + v12Cfg().editWindowMin + ' دقيقة من «طلباتي».', 'success', 6000); return true;
+      notifyUser('تم التسجيل وأُرسل للمراجعة. تقدر تسحبه وتعدّله خلال ' + v12Cfg().editWindowMin + ' دقيقة من «طلباتي».', 'success', 6000); return true;
     };
+    fetchMine(); overlayPending();
     { const o = v12Withdraw; v12Withdraw = function (id) {
         const it = (state.inbox || []).find(x => x.id === id); if (!it || !it.serverId) return o.apply(this, arguments);
         if (!v12CanWithdraw(it)) return void failValidation('انتهت مهلة التعديل — أرسل طلب تعديل للمدير.');
         const r = C.api('PATCH', '/rest/v1/inbox?id=eq.' + it.serverId + '&status=eq.pending', { status: 'withdrawn' });
         if (!r.ok || !(r.json && r.json.length)) return void failValidation('تعذّر السحب (ربما اتراجع أو انتهت المهلة).');
-        fetchMine(); refreshCurrentView(); notifyUser('تم سحب الطلب — سجّله من جديد بعد التصحيح', 'info'); }; }
+        notifyUser('تم سحب الطلب — سجّله من جديد بعد التصحيح', 'info'); setTimeout(() => location.reload(), 600); }; }
     { const o = v12SaveEditRequest; v12SaveEditRequest = function (e) {
         if (e && e.preventDefault) e.preventDefault(); const ref = ($('v12e_ref') || {}).value.trim(), note = ($('v12e_note') || {}).value.trim(); if (!ref || !note) return;
         const r = C.api('POST', '/rest/v1/inbox', { kind: 'edit_request', title: 'طلب تعديل: ' + ref, summary: note.slice(0, 200), note, payload: { ref, note, by: C.user.name || '' } });
@@ -15642,7 +15673,8 @@ function v13TransferSave(e) {
       try { localStorage.setItem('EBHAAR_SYSTEM_STATE_V4_FINAL', JSON.stringify(r.json[0].payload)); } catch (e) { } location.reload();
     };
     const poll = () => {
-      try { fetchMine(); if (typeof v10TopRefresh === 'function') v10TopRefresh(); } catch (e) { }
+      try { const was = new Set((C.myRows || []).filter(x => x.status === 'pending').map(x => x.id)); fetchMine(); if (typeof v10TopRefresh === 'function') v10TopRefresh();
+        if ((C.myRows || []).some(x => was.has(x.id) && (x.status === 'rejected' || x.status === 'withdrawn')) && !modalOpen()) { notifyUser('تم رفض أحد تسجيلاتك — بيتحدّث الآن.', 'info', 4000); setTimeout(() => location.reload(), 1500); return; } } catch (e) { }
       try { const r = C.api('GET', '/rest/v1/published?select=published_at&key=eq.lookups'); if (r.ok && r.json && r.json[0] && C.publishedAt && new Date(r.json[0].published_at) > new Date(C.publishedAt)) { if (!modalOpen() && document.visibilityState === 'visible') window.v21Refresh(); else if (!$('v21Fresh')) { const b = document.createElement('div'); b.id = 'v21Fresh'; b.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:9998;background:#1e3a5f;color:#fff;padding:8px 14px;border-radius:12px;font-size:12px;font-weight:700'; b.innerHTML = 'فيه بيانات أحدث <button onclick="v21Refresh()" style="background:#fff;color:#1e3a5f;border:0;border-radius:8px;padding:2px 10px;margin-inline-start:8px;font-weight:800">تحديث</button>'; document.body.appendChild(b); } } } catch (e) { }
     };
     setTimeout(poll, 2500); setInterval(poll, 90000);
@@ -15652,7 +15684,8 @@ function v13TransferSave(e) {
 
   // ---------- 4) الأدمن/المحاسب: نشر نسخة المسجّل + استلام الطلبات + الاعتماد ----------
   if (!fin) return;
-  try { const A = (state.settings.approval = state.settings.approval || { mode: 'auto', editWindowMin: 30 }); if (!state.settings.v21Window) { A.editWindowMin = Math.min(30, Number(A.editWindowMin) || 30); if (A.editWindowMin === 10) A.editWindowMin = 30; state.settings.v21Window = true; saveState(); } } catch (e) { }
+  try { const A = (state.settings.approval = state.settings.approval || { mode: 'auto', editWindowMin: 30 }); if (!state.settings.v21Review) { A.mode = 'review'; state.settings.v21Review = true; saveState(); }
+    if (!state.settings.v21Window) { A.editWindowMin = Math.min(30, Number(A.editWindowMin) || 30); if (A.editWindowMin === 10) A.editWindowMin = 30; state.settings.v21Window = true; saveState(); } } catch (e) { }
   function snapshot() {
     const s = JSON.parse(JSON.stringify(state)); ['journalEntries', 'auditLog', 'trash', 'inbox', 'notifications'].forEach(k => { delete s[k]; });
     (s.expenses || []).forEach(e => { if (e.category === 'ProfitWithdrawal') { e.category = 'Misc'; e.glAccountId = ''; } });
@@ -15689,8 +15722,50 @@ function v13TransferSave(e) {
     }));
     if (changed) it.delta = JSON.parse(txt); it.reided = true;
   }
-  { const o = v12Approve; v12Approve = function (id) { const it = state.inbox.find(x => x.id === id); if (it && it.kind === 'tx' && it.status === 'pending') reid(it); const r = o.apply(this, arguments); if (it && it.serverId && it.status === 'approved') { pushStatus(it); saveState(); } return r; }; }
-  { const o = v12Reject; v12Reject = function (id) { const it = state.inbox.find(x => x.id === id); const r = o.apply(this, arguments); if (it && it.serverId && it.status === 'rejected') { pushStatus(it); saveState(); } return r; }; }
+  { const o = v12Approve; v12Approve = function (id) {
+      const it = state.inbox.find(x => x.id === id);
+      if (it && it.applied && it.status === 'pending') { it.status = 'approved'; it.reviewedBy = v12Role().name; it.reviewedAt = new Date().toISOString(); logAudit('تأكيد مراجعة', it.id); pushStatus(it); saveState(); try { v5CloseSub(); } catch (e) { } refreshCurrentView(); return void notifyUser('تم تأكيد الطلب', 'success'); }
+      if (it && it.kind === 'tx' && it.status === 'pending') { const dp = pendingDeps(it); if (dp.length) return void failValidation('اعتمد الطلب ' + dp.join('، ') + ' الأول (الطلب ده مبني عليه).'); reid(it); }
+      const r = o.apply(this, arguments); if (it && it.serverId && it.status === 'approved') { pushStatus(it); saveState(); } return r; }; }
+  { const o = v12Reject; v12Reject = function (id) {
+      const it = state.inbox.find(x => x.id === id);
+      if (it && it.applied && it.status === 'pending') {
+        const reason = (($('v12_reason') || {}).value || '').trim(); if (!reason) return void failValidation('اكتب سبب الرفض ليصل للمسجّل.');
+        const rv = reverseApplied(it); if (!rv.ok) return void failValidation('مينفعش يتحذف لأن فيه سجلات مرتبطة بيه: ' + rv.dep.slice(0, 5).join('، ') + ' — احذفها أو ارفضها الأول.');
+        it.status = 'rejected'; it.reason = reason; it.reviewedBy = v12Role().name; it.reviewedAt = new Date().toISOString(); logAudit('رفض بعد التنفيذ (حذف)', it.id + ': ' + reason); pushStatus(it); saveState(); try { v5CloseSub(); } catch (e) { } refreshCurrentView(); return void notifyUser('تم الرفض وحذف التسجيل من الدفاتر', 'info');
+      }
+      const r = o.apply(this, arguments); if (it && it.serverId && it.status === 'rejected') { pushStatus(it); saveState(); } return r; }; }
+  function pendingDeps(it) {
+    if (!it || !it.delta) return []; const txt = JSON.stringify(it.delta), out = [];
+    state.inbox.forEach(o => { if (o === it || o.kind !== 'tx' || o.status !== 'pending' || o.applied || !o.delta || !o.delta.added) return; if (new Date(o.createdAt) > new Date(it.createdAt)) return;
+      Object.keys(o.delta.added).forEach(k => o.delta.added[k].forEach(r => { if (r.id && txt.indexOf('"' + r.id + '"') >= 0 && !((it.delta.added || {})[k] || []).some(x => x.id === r.id)) out.push(o.id); })); });
+    return Array.from(new Set(out));
+  }
+  function dependents(it) {
+    const ids = new Set(); Object.keys((it.delta && it.delta.added) || {}).forEach(k => it.delta.added[k].forEach(r => ids.add(r.id))); const out = [];
+    Object.keys(state).forEach(k => { if (V12_SKIP[k] || !Array.isArray(state[k])) return; state[k].forEach(rec => { if (!rec || ids.has(rec.id)) return; const t = JSON.stringify(rec); ids.forEach(id => { if (t.indexOf('"' + id + '"') >= 0) out.push(k + ':' + (rec.id || '')); }); }); });
+    return Array.from(new Set(out));
+  }
+  function applyNow(it) {
+    reid(it); const before = JSON.parse(JSON.stringify(state)); const snap = JSON.stringify(state);
+    v12Apply(state, it.delta, { createdBy: it.by, approvedBy: 'مراجعة لاحقة', approvedAt: new Date().toISOString(), requestId: it.id });
+    if (!v12Sane(state)) { const s2 = JSON.parse(snap); Object.keys(state).forEach(k => { delete state[k]; }); Object.assign(state, s2); const again = state.inbox.find(x => x.id === it.id); if (again) again.autoFail = true; return false; }
+    it.inverse = v12Diff(state, before); it.applied = true; it.appliedAt = new Date().toISOString(); if (!/بانتظار مراجعتك/.test(it.summary || '')) it.summary = (it.summary || it.title) + ' — منفّذ، بانتظار مراجعتك';
+    logAudit('تنفيذ مبدئي (مراجعة لاحقة)', it.id + ' (' + it.by + '): ' + it.summary); saveState(); return true;
+  }
+  function reverseApplied(it) {
+    const dep = dependents(it); if (dep.length) return { ok: false, dep };
+    v12Apply(state, it.inverse || { added: {}, removed: {}, changed: {} }); it.applied = false; return { ok: true };
+  }
+  function reviewDialog(id) {
+    const it = state.inbox.find(x => x.id === id); if (!it) return;
+    const lst = Object.keys((it.delta && it.delta.added) || {}).map(k => it.delta.added[k].map(r => '<li>' + esc(k) + ' — ' + esc(r.id) + ' ' + esc(r.name || r.code || r.description || (r.amount != null ? r.amount : '') || (r.totalCost != null ? r.totalCost : '')) + '</li>').join('')).join('');
+    v5OpenSub('مراجعة ' + id, `<div class="space-y-3 text-xs"><div class="p-3 bg-stone-50 border border-stone-200 rounded-xl"><b>${esc(it.by)}</b> — ${esc(it.title)}<div class="font-black mt-1">${esc(it.summary)}</div></div>
+      <div class="font-bold">اللي اتسجّل في الدفاتر:</div><ul class="list-disc pr-5 text-stone-700">${lst || '<li>—</li>'}</ul>
+      <textarea id="v12_reason" rows="2" placeholder="سبب الرفض (مطلوب عند الرفض)" class="w-full p-2.5 border border-stone-300 rounded-xl"></textarea>
+      <div class="flex justify-end gap-2"><button class="px-4 py-2 bg-stone-200 rounded-xl font-bold" onclick="v5CloseSub()">إغلاق</button><button class="px-4 py-2 bg-rose-600 text-white rounded-xl font-bold" onclick="v12Reject('${id}')">رفض وحذف</button><button class="px-4 py-2 bg-emerald-700 text-white rounded-xl font-bold" onclick="v12Approve('${id}')">تأكيد (سليم)</button></div></div>`, 'max-w-lg');
+  }
+  { const o = v12Review; v12Review = function (id) { const it = state.inbox.find(x => x.id === id); if (it && it.applied && it.status === 'pending') return reviewDialog(id); return o.apply(this, arguments); }; }
   function autoApprove(it) {
     reid(it); const snap = JSON.stringify(state);
     v12Apply(state, it.delta, { createdBy: it.by, approvedBy: 'تلقائي', approvedAt: new Date().toISOString(), requestId: it.id });
@@ -15707,11 +15782,14 @@ function v13TransferSave(e) {
       r.json.forEach(row => {
         const loc = state.inbox.find(x => x.serverId === row.id);
         if (!loc) { if (row.status === 'pending') { state.inbox.unshift(mapRow(row, nameOf())); changed = true; } return; }
-        if (loc.status === 'pending' && row.status === 'withdrawn') { loc.status = 'withdrawn'; loc.reviewedAt = new Date().toISOString(); changed = true; }
+        if (loc.status === 'pending' && row.status === 'withdrawn') {
+          if (loc.applied) { const rv = reverseApplied(loc); if (!rv.ok) { if (!loc.withdrawBlocked) { loc.withdrawBlocked = true; changed = true; notifyUser('المسجّل سحب طلبًا لكن مينفعش يتحذف تلقائيًا (فيه سجلات مرتبطة): ' + loc.summary, 'error', 8000); } return; } }
+          loc.status = 'withdrawn'; loc.reviewedAt = new Date().toISOString(); changed = true; }
         else if ((loc.status === 'approved' || loc.status === 'rejected') && row.status === 'pending') { if (pushStatus(loc)) changed = true; }
       });
       if (changed) saveState();
       const cfg = v12Cfg(); let applied = 0;
+      if (cfg.mode === 'review' && !modalOpen()) { const ord = state.inbox.filter(i => i.status === 'pending' && i.kind === 'tx' && i.serverId && !i.applied && !i.autoFail).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)); let n = 0; ord.forEach(i => { if (applyNow(i)) n++; }); if (n) { notifyUser('اتنفّذ ' + n + ' تسجيل من المسجّل — بانتظار مراجعتك', 'success', 6000); if (!modalOpen()) refreshCurrentView(); } }
       if (cfg.mode === 'auto' && !modalOpen()) state.inbox.filter(i => i.status === 'pending' && i.kind === 'tx' && i.serverId && !i.autoFail && (Date.now() - new Date(i.createdAt).getTime()) >= cfg.editWindowMin * 60000).forEach(i => { if (autoApprove(i)) applied++; });
       if (applied) { notifyUser('تم اعتماد ' + applied + ' طلب من المسجّل تلقائيًا', 'success', 5000); if (!modalOpen()) refreshCurrentView(); }
       if (typeof v10TopRefresh === 'function') v10TopRefresh();
@@ -15720,6 +15798,67 @@ function v13TransferSave(e) {
   window.v21Sync = sync;
   setTimeout(sync, 3500); setInterval(sync, 60000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(sync, 800); });
+})();
+
+/* ===== V22: هيدر الموبايل المضغوط ===== */
+;(function(){
+  try{
+  var st=document.createElement('style');
+  st.textContent=
+  '#v22More,#v22Panel{display:none}'+
+  '@media (max-width:767px){'+
+  'header.hd-ready{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;padding:8px 10px!important;gap:6px!important;min-height:0!important}'+
+  'header.hd-ready>div{min-width:0}'+
+  'header.hd-ready .hd-center{display:none!important}'+
+  'header.hd-ready #appCompanyNameEl{font-size:14px!important;max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+  'header.hd-ready #appLogoBox{width:32px!important;height:32px!important;font-size:15px!important}'+
+  'header.hd-ready .hd-actions{gap:6px!important}'+
+  'header.hd-ready .hd-start{gap:6px!important;flex-shrink:0}'+
+  '.hd-conn{display:none!important}'+
+  '.hd-user{height:36px!important;padding:0 4px!important}.hd-ut{display:none!important}'+
+  '#v22More{display:flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:12px;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.1);color:#fff;font-size:20px;font-weight:800;cursor:pointer;flex-shrink:0;line-height:1;padding:0}'+
+  '#v22Panel.open{display:grid;position:fixed;top:56px;left:8px;right:8px;z-index:60;grid-template-columns:repeat(5,1fr);gap:8px;padding:10px;background:#fff;border:1px solid #e6e0d6;border-radius:16px;box-shadow:0 18px 40px -16px rgba(20,48,79,.5)}'+
+  '#v22Panel>*{display:flex!important;flex-direction:column;align-items:center;justify-content:center;gap:4px;height:62px!important;width:auto!important;min-width:0;border-radius:12px;background:#f3efe7!important;color:#1e3a5f!important;border:0!important;font-size:20px;padding:4px!important;cursor:pointer}'+
+  '#v22Panel>*::after{content:attr(data-l);font-size:11px;font-weight:700;white-space:nowrap}'+
+  '#v22Panel>*>*{pointer-events:none}'+
+  '#v22Panel .v10-bk-t{display:none!important}'+
+  '}';
+  document.head.appendChild(st);
+  var mq=window.matchMedia('(max-width:767px)'),ids=['v19Hd','v18HdSearch','v18HdXls','v18HdPrint','v10TopBackup'],
+      lab={v19Hd:'تقرير',v18HdSearch:'بحث',v18HdXls:'إكسل',v18HdPrint:'طباعة',v10TopBackup:'نسخة'};
+  var home={};
+  function els(){return ids.map(function(i){return document.getElementById(i)}).filter(Boolean)}
+  function setup(){
+    var h=document.querySelector('header.hd-ready');if(!h)return false;
+    var start=h.querySelector('.hd-start');if(!start)return false;
+    var more=document.getElementById('v22More'),pn=document.getElementById('v22Panel');
+    if(!more){
+      more=document.createElement('button');more.type='button';more.id='v22More';more.textContent='⋯';more.setAttribute('aria-label','المزيد');
+      pn=document.createElement('div');pn.id='v22Panel';
+      more.onclick=function(e){e.stopPropagation();pn.classList.toggle('open')};
+      pn.onclick=function(){setTimeout(function(){pn.classList.remove('open')},0)};
+      document.addEventListener('click',function(e){if(pn.classList.contains('open')&&!pn.contains(e.target))pn.classList.remove('open')});
+      start.appendChild(more);document.body.appendChild(pn);
+    }
+    place();return true;
+  }
+  function place(){
+    var pn=document.getElementById('v22Panel');if(!pn)return;
+    els().forEach(function(e){
+      if(mq.matches){
+        if(e.parentNode!==pn){ if(!home[e.id])home[e.id]={p:e.parentNode,n:e.nextSibling}; e.setAttribute('data-l',lab[e.id]||''); pn.appendChild(e); }
+      }else{
+        var hm=home[e.id]; if(hm&&e.parentNode===pn){ try{hm.p.insertBefore(e,hm.n&&hm.n.parentNode===hm.p?hm.n:null)}catch(x){hm.p.appendChild(e)} }
+        e.removeAttribute('data-l');
+      }
+    });
+    if(!mq.matches)pn.classList.remove('open');
+  }
+  var t=0,iv=setInterval(function(){t++;if(setup()||t>80)clearInterval(iv)},250);
+  (mq.addEventListener?mq.addEventListener('change',place):mq.addListener(place));
+  // الأزرار قد تُبنى متأخراً
+  setInterval(function(){if(mq.matches&&document.getElementById('v22Panel'))place()},2000);
+  }catch(e){}
 })();
 
 ;(function(){try{if('serviceWorker' in navigator&&location.protocol==='https:')window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){})});}catch(e){}})();
