@@ -15893,6 +15893,155 @@ function v13TransferSave(e) {
   }catch(e){}
 })();
 
+/* ===== V23: استيراد الأرصدة الافتتاحية من دفترة (المرحلة 1) ===== */
+;(function(){
+  var $=function(i){return document.getElementById(i)};
+  var esc=function(x){return String(x==null?'':x).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})};
+  var fm=function(v){return Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})};
+  var r2=function(v){return Math.round((Number(v)||0)*100)/100};
+  var PKG=null, LAST=null;
+
+  function isAdmin(){ try{ return typeof v12IsAdmin==='function' ? v12IsAdmin() : true; }catch(e){ return false; } }
+
+  // ---------- المحرّك ----------
+  function apply(pkg){
+    if(!pkg || pkg.version!=='dafatra-stage1') throw new Error('ملف غير صالح (ليس ملف استيراد دفترة المرحلة 1).');
+    state.settings = state.settings || {};
+    if(state.settings.dafatraStage1) throw new Error('تم تنفيذ هذا الاستيراد من قبل ('+state.settings.dafatraStage1.at+'). لا يمكن تكراره.');
+    var map={c:{},s:{},t:{}};
+    // 1) الخزائن
+    var parent = state.chartOfAccounts.find(function(a){return a.id==='COA-X1110'});
+    if(!parent) throw new Error('حساب الخزينة غير موجود في شجرة الحسابات.');
+    state.settings.accounting = state.settings.accounting || {}; state.settings.accounting.treasuryMap = state.settings.accounting.treasuryMap || {};
+    pkg.treasuries.forEach(function(t){
+      var ex=state.accounts.find(function(a){return String(a.name).trim()===t.name});
+      if(ex){ map.t[t.key]=ex.id; return; }
+      var code=nextTreasuryChartCode(state), tid='ACC-CASH-DFT-'+t.key.toUpperCase(), cid='COA-CASH-DFT-'+t.key.toUpperCase();
+      state.accounts.push({id:tid,name:t.name,balance:0,code:code});
+      state.chartOfAccounts.push({id:cid,code:code,name:t.name,type:'Asset',parentId:parent.id,active:true,treasuryId:tid});
+      state.settings.accounting.treasuryMap[tid]=cid; map.t[t.key]=tid;
+    });
+    // 2) العملاء والموردين
+    pkg.customers.forEach(function(c){
+      var ex=state.customers.find(function(x){return String(x.name).trim()===c.name});
+      if(ex){ map.c[c.id]=ex.id; if(c.notes) ex.notes=(ex.notes?ex.notes+'\n':'')+c.notes; return; }
+      var id=nextId('CUST'); state.customers.push({id:id,name:c.name,phone:'',address:'',notes:c.notes||''}); map.c[c.id]=id;
+    });
+    pkg.suppliers.forEach(function(s){
+      var ex=state.suppliers.find(function(x){return String(x.name).trim()===s.name});
+      if(ex){ map.s[s.id]=ex.id; return; }
+      var id=nextId('SUPP'); state.suppliers.push({id:id,name:s.name,phone:'',address:''}); map.s[s.id]=id;
+    });
+    // 3) أرصدة العملاء
+    var made={contracts:[],collections:[],purchases:[],payments:[]};
+    pkg.contracts.forEach(function(k){
+      var id=nextId('CONT');
+      state.contracts.unshift({id:id,customerId:map.c[k.customerId],type:'رصيد مرحّل من دفترة',date:k.date,floors:0,stops:0,laborCost:0,transportCost:0,miscCost:0,maintenanceWarrantyCost:0,profitMargin:0,value:k.value,specs:k.specs||'',items:[],dafatraOpening:true});
+      made.contracts.push(id);
+    });
+    pkg.collections.forEach(function(k){
+      var id=nextId('COLL');
+      state.collections.unshift({id:id,customerId:map.c[k.customerId],operationId:'',amount:k.amount,date:k.date,accountId:map.t[k.accountKey],notes:k.notes||'',allocations:[],glAccountId:'COA-X2130',dafatraOpening:true});
+      made.collections.push(id);
+    });
+    // 4) أرصدة الموردين
+    pkg.purchases.forEach(function(p){
+      var id=nextId('PURCH');
+      state.purchases.unshift({id:id,invoiceId:p.invoiceId,customerId:'',operationId:'',phaseKey:'',productId:'',supplierId:map.s[p.supplierId],paymentType:'credit',qty:1,unitCost:p.amount,totalCost:p.amount,accountId:'',glAccountId:'COA-D1210',date:p.date,notes:'رصيد افتتاحي مرحّل من دفترة',dafatraOpening:true});
+      made.purchases.push(id);
+    });
+    pkg.supplierPayments.forEach(function(p){
+      var id=nextId('SUPPPAY');
+      state.supplierPayments.unshift({id:id,supplierId:map.s[p.supplierId],amount:p.amount,accountId:map.t[p.accountKey],glAccountId:'',date:p.date,notes:p.notes||'',allocations:[],dafatraOpening:true});
+      made.payments.push(id);
+    });
+    saveState();
+    // 5) القيد الافتتاحي: يضبط الخزائن والحسابات الأخرى على أرصدة دفترة ويوازن الباقي على «أرباح سنوات سابقة»
+    var led=computeLedger(state), lines=[], net=0;
+    function addLine(accountId,delta){ delta=r2(delta); if(Math.abs(delta)<0.005) return; lines.push({accountId:accountId,debit:delta>0?delta:0,credit:delta<0?-delta:0}); net=r2(net+delta); }
+    pkg.treasuries.forEach(function(t){
+      var tid=map.t[t.key], cid=state.settings.accounting.treasuryMap[tid], cur=r2(led.cash[tid]||0);
+      addLine(cid, t.target-cur);
+    });
+    pkg.coaTargets.forEach(function(t){ var b=led.bal['coa:'+t.id], cur=b?r2(b.debit-b.credit):0; addLine(t.id, t.target-cur); });
+    var b10=led.bal['coa:COA-D1210']; if(b10) addLine('COA-D1210', -r2(b10.debit-b10.credit));   // تحييد مدين الشراء الافتتاحي
+    if(Math.abs(net)>=0.005) lines.push({accountId:'COA-X3210',debit:net<0?-net:0,credit:net>0?net:0});
+    var mje={id:nextId('MJE'),date:pkg.asOf,description:'قيد افتتاحي — أرصدة مرحّلة من دفترة',lines:lines,createdAt:new Date().toISOString(),dafatraOpening:true};
+    state.manualEntries.unshift(mje);
+    state.settings.dafatraStage1={at:new Date().toLocaleString('en-GB'),asOf:pkg.asOf,counts:{customers:pkg.customers.length,suppliers:pkg.suppliers.length,contracts:made.contracts.length,collections:made.collections.length,purchases:made.purchases.length,payments:made.payments.length}};
+    try{ logAudit('استيراد من دفترة','ترحيل الأرصدة الافتتاحية: '+pkg.customers.length+' عميل، '+pkg.suppliers.length+' مورد'); }catch(e){}
+    saveState();
+    return verify(pkg,map);
+  }
+
+  function verify(pkg,map){
+    var rows=[], ok=true;
+    function chk(label,got,exp){ var good=Math.abs(r2(got)-r2(exp))<0.01; if(!good) ok=false; rows.push({label:label,got:r2(got),exp:r2(exp),good:good}); }
+    state.accounts.forEach(function(a){ var t=pkg.treasuries.find(function(x){return map.t[x.key]===a.id}); if(t) chk('خزينة: '+a.name,a.balance,t.target); });
+    var cs=0,cdue=0,cadv=0; Object.keys(pkg.expected.customers).forEach(function(k){ var e=pkg.expected.customers[k], b=getCustomerBalance(map.c[k]); cdue+=b.due; cadv+=b.advance; if(Math.abs(b.due-e.due)>0.01||Math.abs(b.advance-e.advance)>0.01){ ok=false; rows.push({label:'عميل '+k,got:b.due-b.advance,exp:e.due-e.advance,good:false}); } cs++; });
+    chk('إجمالي المستحق على العملاء',cdue,Object.values(pkg.expected.customers).reduce(function(s,e){return s+e.due},0));
+    chk('إجمالي دفعات العملاء المقدمة',cadv,Object.values(pkg.expected.customers).reduce(function(s,e){return s+e.advance},0));
+    var sdue=0,sadv=0; Object.keys(pkg.expected.suppliers).forEach(function(k){ var e=pkg.expected.suppliers[k], b=getSupplierBalance(map.s[k]); sdue+=b.due; sadv+=b.advance; if(Math.abs(b.due-e.due)>0.01||Math.abs(b.advance-e.advance)>0.01){ ok=false; rows.push({label:'مورد '+k,got:b.due-b.advance,exp:e.due-e.advance,good:false}); } });
+    chk('إجمالي المستحق للموردين',sdue,Object.values(pkg.expected.suppliers).reduce(function(s,e){return s+e.due},0));
+    chk('إجمالي مدفوع مقدمًا للموردين',sadv,Object.values(pkg.expected.suppliers).reduce(function(s,e){return s+e.advance},0));
+    pkg.coaTargets.forEach(function(t){ var l=computeLedger(state), b=l.bal['coa:'+t.id]; chk('حساب: '+t.name, b?b.debit-b.credit:0, t.target); });
+    var l=computeLedger(state); chk('توازن القيود (مدين − دائن)',l.totalDebit-l.totalCredit,0);
+    var pend=(state.journalEntries||[]).filter(function(e){return e.status!=='posted'}); if(pend.length){ ok=false; rows.push({label:'قيود معلّقة',got:pend.length,exp:0,good:false}); }
+    return {ok:ok,rows:rows,customers:cs};
+  }
+  window.v23Apply=apply;
+
+  // لا نحسب عقود الرصيد المرحّل ضمن «عقود بلا عملية»
+  try{
+    var od=v10DashData;
+    v10DashData=function(){ var d=od.apply(this,arguments); try{ var n=(state.contracts||[]).filter(function(c){return c.dafatraOpening && !(state.operations||[]).some(function(o){return o.contractId===c.id})}).length; if(n&&d.statuses&&d.statuses[4]) d.statuses[4].k=Math.max(0,d.statuses[4].k-n); }catch(e){} return d; };
+  }catch(e){}
+
+  // ---------- الصفحة ----------
+  window.v23Pick=function(inp){
+    var f=inp.files&&inp.files[0]; if(!f) return;
+    var rd=new FileReader();
+    rd.onload=function(){ try{ PKG=JSON.parse(rd.result); if(PKG.version!=='dafatra-stage1') throw new Error('ملف غير صالح'); LAST=null; }catch(e){ PKG=null; notifyUser('الملف غير صالح: '+e.message,'error'); } refreshCurrentView(); };
+    rd.readAsText(f,'utf-8');
+  };
+  window.v23Run=function(){
+    if(!PKG) return;
+    if(!confirm('سيتم تنزيل نسخة احتياطية أولًا ثم تنفيذ الاستيراد. متأكد؟')) return;
+    try{ exportApplicationData(); }catch(e){ if(!confirm('تعذر تنزيل النسخة الاحتياطية. هل تكمل بدونها؟')) return; }
+    setTimeout(function(){
+      try{ LAST=apply(PKG); notifyUser(LAST.ok?'تم الاستيراد وكل الأرقام مطابقة ✓':'تم الاستيراد لكن في أرقام غير مطابقة — راجع الجدول','success'); }
+      catch(e){ LAST={ok:false,error:e.message,rows:[]}; notifyUser('فشل الاستيراد: '+e.message,'error'); }
+      refreshCurrentView();
+    },600);
+  };
+  V5_VIEWS['dafatra']=function(){
+    var done=state.settings&&state.settings.dafatraStage1;
+    var pv='';
+    if(PKG){
+      var due=PKG.contracts.reduce(function(s,x){return s+x.value},0), adv=PKG.collections.reduce(function(s,x){return s+x.amount},0), sd=PKG.purchases.reduce(function(s,x){return s+x.amount},0), sa=PKG.supplierPayments.reduce(function(s,x){return s+x.amount},0);
+      pv='<div class="bg-white border border-stone-200 rounded-2xl p-4 space-y-2"><div class="font-bold">محتوى الملف (بتاريخ '+esc(PKG.asOf)+')</div><table class="w-full text-sm"><tbody>'+
+        [['العملاء',PKG.customers.length],['الموردين',PKG.suppliers.length]].map(function(r){return '<tr><td class="py-1">'+r[0]+'</td><td class="text-left font-bold">'+r[1]+'</td></tr>'}).join('')+
+        PKG.treasuries.map(function(t){return '<tr><td class="py-1">رصيد '+esc(t.name)+'</td><td class="text-left font-bold">'+fm(t.target)+'</td></tr>'}).join('')+
+        [['مستحق على العملاء ('+PKG.contracts.length+' عميل)',due],['دفعات مقدمة من العملاء ('+PKG.collections.length+' عميل)',adv],['مستحق للموردين ('+PKG.purchases.length+' مورد)',sd],['مدفوع مقدمًا للموردين ('+PKG.supplierPayments.length+' مورد)',sa]].map(function(r){return '<tr><td class="py-1">'+r[0]+'</td><td class="text-left font-bold">'+fm(r[1])+'</td></tr>'}).join('')+
+        '</tbody></table>'+(done?'<div class="text-sm font-bold text-amber-700">تم تنفيذ الاستيراد من قبل — لا يمكن تكراره.</div>':'<button onclick="v23Run()" class="px-4 py-2 rounded-lg bg-emerald-700 text-white font-bold">تنفيذ الاستيراد (مع نسخة احتياطية أولًا)</button>')+'</div>';
+    }
+    var res='';
+    if(LAST){
+      res='<div class="bg-white border border-stone-200 rounded-2xl p-4 space-y-2"><div class="font-bold '+(LAST.ok?'text-emerald-700':'text-red-700')+'">'+(LAST.error?('فشل: '+esc(LAST.error)):(LAST.ok?'كل الأرقام مطابقة لدفترة ✓':'يوجد أرقام غير مطابقة'))+'</div>'+
+        (LAST.rows.length?'<table class="w-full text-sm"><thead><tr class="text-stone-500"><th class="text-right">البند</th><th>في السيستم</th><th>المتوقع</th><th></th></tr></thead><tbody>'+LAST.rows.map(function(r){return '<tr class="border-t"><td class="py-1">'+esc(r.label)+'</td><td class="text-center">'+fm(r.got)+'</td><td class="text-center">'+fm(r.exp)+'</td><td class="text-center">'+(r.good?'✓':'✗')+'</td></tr>'}).join('')+'</tbody></table>':'')+'</div>';
+    }
+    return '<div class="space-y-4"><div><h2 class="text-xl font-bold text-stone-900">استيراد من دفترة</h2><p class="text-xs text-stone-500">ترحيل الأرصدة الافتتاحية (المرحلة 1): العملاء والموردين وأرصدة الخزائن والعملاء والموردين. الملف بيتقرأ على جهازك ومش بيترفع لأي مكان.</p></div>'+
+      '<div class="bg-white border border-stone-200 rounded-2xl p-4 space-y-2"><div class="text-sm">اختار ملف <b>dafatra_stage1.json</b> اللي بعتهولك Claude:</div><input type="file" accept=".json,application/json" onchange="v23Pick(this)" class="text-sm"></div>'+pv+res+'</div>';
+  };
+  function addNav(){
+    if(!isAdmin()) return; var sub=$('sub-system'); if(!sub||$('nav-dafatra')) return;
+    var a=document.createElement('a'); a.id='nav-dafatra'; a.href='#/dafatra'; a.className='nav-btn w-full text-right px-3 py-2 text-xs text-stone-600 hover:bg-stone-200/80 rounded-lg'; a.textContent='استيراد من دفترة';
+    a.addEventListener('click',function(ev){ if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1) return; ev.preventDefault(); navigateTo('dafatra'); });
+    sub.appendChild(a);
+  }
+  addNav(); var n=0, iv=setInterval(function(){ addNav(); if($('nav-dafatra')||++n>40) clearInterval(iv); },500);
+})();
+
 ;(function(){try{if('serviceWorker' in navigator&&location.protocol==='https:')window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){})});}catch(e){}})();
 </script>
 
