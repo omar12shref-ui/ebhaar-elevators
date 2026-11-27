@@ -15934,14 +15934,15 @@ function v13TransferSave(e) {
     });
     // 3) أرصدة العملاء
     var made={contracts:[],collections:[],purchases:[],payments:[]};
+    map.k={};
     pkg.contracts.forEach(function(k){
-      var id=nextId('CONT');
-      state.contracts.unshift({id:id,customerId:map.c[k.customerId],type:'رصيد مرحّل من دفترة',date:k.date,floors:0,stops:0,laborCost:0,transportCost:0,miscCost:0,maintenanceWarrantyCost:0,profitMargin:0,value:k.value,specs:k.specs||'',items:[],dafatraOpening:true});
+      var id=nextId('CONT'); map.k[k.id]=id;
+      state.contracts.unshift({id:id,customerId:map.c[k.customerId],type:k.delivered?'عقد مُسلَّم (مرحّل من دفترة)':'عقد مرحّل من دفترة',date:k.date,floors:0,stops:0,laborCost:0,transportCost:0,miscCost:0,maintenanceWarrantyCost:0,profitMargin:0,value:k.value,specs:k.specs||'',items:[],dafatraOpening:true});
       made.contracts.push(id);
     });
     pkg.collections.forEach(function(k){
       var id=nextId('COLL');
-      state.collections.unshift({id:id,customerId:map.c[k.customerId],operationId:'',amount:k.amount,date:k.date,accountId:map.t[k.accountKey],notes:k.notes||'',allocations:[],glAccountId:'COA-X2130',dafatraOpening:true});
+      state.collections.unshift({id:id,customerId:map.c[k.customerId],operationId:'',amount:k.amount,date:k.date,accountId:map.t[k.accountKey],notes:k.notes||'',allocations:k.contractRef?[{invoiceId:map.k[k.contractRef],amount:k.allocAmount}]:[],dafatraOpening:true});
       made.collections.push(id);
     });
     // 4) أرصدة الموردين
@@ -15965,6 +15966,7 @@ function v13TransferSave(e) {
     });
     pkg.coaTargets.forEach(function(t){ var b=led.bal['coa:'+t.id], cur=b?r2(b.debit-b.credit):0; addLine(t.id, t.target-cur); });
     var b10=led.bal['coa:COA-D1210']; if(b10) addLine('COA-D1210', -r2(b10.debit-b10.credit));   // تحييد مدين الشراء الافتتاحي
+    if(pkg.drawings) addLine('COA-4400', pkg.drawings);   // مسحوبات المالك (سحب أرباح) السابقة
     if(Math.abs(net)>=0.005) lines.push({accountId:'COA-X3210',debit:net<0?-net:0,credit:net>0?net:0});
     var mje={id:nextId('MJE'),date:pkg.asOf,description:'قيد افتتاحي — أرصدة مرحّلة من دفترة',lines:lines,createdAt:new Date().toISOString(),dafatraOpening:true};
     state.manualEntries.unshift(mje);
@@ -15979,8 +15981,8 @@ function v13TransferSave(e) {
     function chk(label,got,exp){ var good=Math.abs(r2(got)-r2(exp))<0.01; if(!good) ok=false; rows.push({label:label,got:r2(got),exp:r2(exp),good:good}); }
     state.accounts.forEach(function(a){ var t=pkg.treasuries.find(function(x){return map.t[x.key]===a.id}); if(t) chk('خزينة: '+a.name,a.balance,t.target); });
     var cs=0,cdue=0,cadv=0; Object.keys(pkg.expected.customers).forEach(function(k){ var e=pkg.expected.customers[k], b=getCustomerBalance(map.c[k]); cdue+=b.due; cadv+=b.advance; if(Math.abs(b.due-e.due)>0.01||Math.abs(b.advance-e.advance)>0.01){ ok=false; rows.push({label:'عميل '+k,got:b.due-b.advance,exp:e.due-e.advance,good:false}); } cs++; });
-    chk('إجمالي المستحق على العملاء',cdue,Object.values(pkg.expected.customers).reduce(function(s,e){return s+e.due},0));
-    chk('إجمالي دفعات العملاء المقدمة',cadv,Object.values(pkg.expected.customers).reduce(function(s,e){return s+e.advance},0));
+    chk('إجمالي المتبقي على العملاء',cdue,Object.values(pkg.expected.customers).reduce(function(s,e){return s+e.due},0));
+    chk('إجمالي الدفعات الزائدة عن العقود',cadv,Object.values(pkg.expected.customers).reduce(function(s,e){return s+e.advance},0));
     var sdue=0,sadv=0; Object.keys(pkg.expected.suppliers).forEach(function(k){ var e=pkg.expected.suppliers[k], b=getSupplierBalance(map.s[k]); sdue+=b.due; sadv+=b.advance; if(Math.abs(b.due-e.due)>0.01||Math.abs(b.advance-e.advance)>0.01){ ok=false; rows.push({label:'مورد '+k,got:b.due-b.advance,exp:e.due-e.advance,good:false}); } });
     chk('إجمالي المستحق للموردين',sdue,Object.values(pkg.expected.suppliers).reduce(function(s,e){return s+e.due},0));
     chk('إجمالي مدفوع مقدمًا للموردين',sadv,Object.values(pkg.expected.suppliers).reduce(function(s,e){return s+e.advance},0));
@@ -16018,11 +16020,12 @@ function v13TransferSave(e) {
     var done=state.settings&&state.settings.dafatraStage1;
     var pv='';
     if(PKG){
-      var due=PKG.contracts.reduce(function(s,x){return s+x.value},0), adv=PKG.collections.reduce(function(s,x){return s+x.amount},0), sd=PKG.purchases.reduce(function(s,x){return s+x.amount},0), sa=PKG.supplierPayments.reduce(function(s,x){return s+x.amount},0);
+      var E=PKG.expected, sum=function(o,k){return Object.keys(o).reduce(function(s,i){return s+o[i][k]},0)};
+      var cv=PKG.contracts.reduce(function(s,x){return s+x.value},0), cc=PKG.collections.reduce(function(s,x){return s+x.amount},0);
       pv='<div class="bg-white border border-stone-200 rounded-2xl p-4 space-y-2"><div class="font-bold">محتوى الملف (بتاريخ '+esc(PKG.asOf)+')</div><table class="w-full text-sm"><tbody>'+
-        [['العملاء',PKG.customers.length],['الموردين',PKG.suppliers.length]].map(function(r){return '<tr><td class="py-1">'+r[0]+'</td><td class="text-left font-bold">'+r[1]+'</td></tr>'}).join('')+
+        [['العملاء ('+PKG.customers.filter(function(c){return c.delivered}).length+' منهم مُسلَّم)',PKG.customers.length,1],['الموردين',PKG.suppliers.length,1]].map(function(r){return '<tr><td class="py-1">'+r[0]+'</td><td class="text-left font-bold">'+r[1]+'</td></tr>'}).join('')+
         PKG.treasuries.map(function(t){return '<tr><td class="py-1">رصيد '+esc(t.name)+'</td><td class="text-left font-bold">'+fm(t.target)+'</td></tr>'}).join('')+
-        [['مستحق على العملاء ('+PKG.contracts.length+' عميل)',due],['دفعات مقدمة من العملاء ('+PKG.collections.length+' عميل)',adv],['مستحق للموردين ('+PKG.purchases.length+' مورد)',sd],['مدفوع مقدمًا للموردين ('+PKG.supplierPayments.length+' مورد)',sa]].map(function(r){return '<tr><td class="py-1">'+r[0]+'</td><td class="text-left font-bold">'+fm(r[1])+'</td></tr>'}).join('')+
+        [['إجمالي قيم العقود ('+PKG.contracts.length+' عقد)',cv],['إجمالي التحصيلات',cc],['متبقي على العملاء',sum(E.customers,'due')],['دفعات زائدة عن العقد',sum(E.customers,'advance')],['مستحق للموردين ('+PKG.purchases.length+' مورد)',sum(E.suppliers,'due')],['مدفوع مقدمًا للموردين',sum(E.suppliers,'advance')],['مسحوبات أرباح سابقة',PKG.drawings||0]].map(function(r){return '<tr><td class="py-1">'+r[0]+'</td><td class="text-left font-bold">'+fm(r[1])+'</td></tr>'}).join('')+
         '</tbody></table>'+(done?'<div class="text-sm font-bold text-amber-700">تم تنفيذ الاستيراد من قبل — لا يمكن تكراره.</div>':'<button onclick="v23Run()" class="px-4 py-2 rounded-lg bg-emerald-700 text-white font-bold">تنفيذ الاستيراد (مع نسخة احتياطية أولًا)</button>')+'</div>';
     }
     var res='';
