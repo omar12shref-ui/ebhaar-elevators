@@ -15826,7 +15826,7 @@ function v13TransferSave(e) {
   '.hd-user{height:36px!important;padding:0 4px!important}.hd-ut{display:none!important}'+
   '}';
   document.head.appendChild(st);
-  var mq=window.matchMedia('(min-width:0px)'),ids=['v19Hd','v18HdSearch','v18HdXls','v18HdPrint','v10TopBackup'],
+  var mq=window.matchMedia('(min-width:0px)'),ids=['v18HdXls','v10TopBackup'],
       lab={v19Hd:'تقرير',v18HdSearch:'بحث',v18HdXls:'إكسل',v18HdPrint:'طباعة',v10TopBackup:'نسخة'};
   var home={};
   function els(){return ids.map(function(i){return document.getElementById(i)}).filter(Boolean)}
@@ -15895,6 +15895,88 @@ function v13TransferSave(e) {
 
 /* ===== V23: إلغاء زر «رجوع» من الشريط العلوي (الرجوع من المتصفح) ===== */
 ;(function(){ try{ var s=document.createElement('style'); s.textContent='#v6Back,.v6-back,.v6-back.show{display:none!important}'; document.head.appendChild(s); }catch(e){} })();
+
+/* ===== V24: زر طابعة جنب الجرس + بحث داخل الشريط العلوي + محاذاة الشريط الجانبي ===== */
+;(function(){
+  try{
+  var st=document.createElement('style');
+  st.textContent=
+  /* الشريط الجانبي: كل عناصر القوائم الفرعية بنفس المحاذاة (بداية السطر = يمين) وعناصر المستوى الأول بنفس شكل بعض */
+  '#mainSidebar [id^="sub-"]>a,#mainSidebar [id^="sub-"]>button{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:.5rem;text-align:start!important;width:100%;box-sizing:border-box}'+
+  '@media (max-width:767px){#mainSidebar .pt-2>.nav-btn,#mainSidebar .space-y-1>.nav-btn{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:.75rem;text-align:start!important;width:100%;box-sizing:border-box}#mainSidebar button[onclick^="toggleSubmenu"]{text-align:start}}'+
+  /* أزرار الهيدر القديمة (تُستبدل) */
+  '#v19Hd,#v18HdPrint,#v18HdSearch,#v22Panel>#v18HdSearch{display:none!important}'+
+  /* زر الطابعة وقائمته */
+  '#v24Pr{position:relative;display:inline-flex}'+
+  '#v24PrBtn{display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:12px;background:rgba(255,255,255,.14);color:#fff;border:none;cursor:pointer;padding:0}'+
+  '#v24PrMenu{display:none;position:absolute;top:calc(100% + 8px);left:0;min-width:210px;background:#fff;border:1px solid #e6e0d6;border-radius:14px;box-shadow:0 18px 40px -16px rgba(20,48,79,.5);padding:6px;z-index:80}'+
+  '#v24PrMenu.open{display:block}'+
+  '#v24PrMenu button{display:flex;align-items:center;gap:8px;width:100%;text-align:start;padding:10px 12px;border:0;background:transparent;border-radius:10px;font-size:13px;font-weight:700;color:#1e3a5f;cursor:pointer}'+
+  '#v24PrMenu button:hover{background:#f3efe7}'+
+  /* البحث داخل الشريط */
+  '.hd-center{position:relative}'+
+  '#v24Drop{display:none;position:absolute;top:calc(100% + 8px);right:0;left:0;max-height:62vh;overflow:auto;background:#fff;color:#1c1917;border:1px solid #e6e0d6;border-radius:14px;box-shadow:0 18px 40px -16px rgba(20,48,79,.5);z-index:80;text-align:start}'+
+  '#v24Drop.open{display:block}'+
+  '#v24SBtn,#v24SX{display:none;align-items:center;justify-content:center;width:38px;height:38px;border-radius:12px;background:rgba(255,255,255,.14);color:#fff;border:none;cursor:pointer;padding:0;flex-shrink:0}'+
+  '@media (max-width:767px){'+
+  '#v24SBtn{display:flex}'+
+  '#v24PrBtn{width:38px;height:38px}'+
+  'header.v24-s .hd-center{display:flex!important;position:absolute;inset:0;z-index:70;background:var(--deep-blue);align-items:center;gap:8px;padding:0 10px}'+
+  'header.v24-s .hd-center>div.items-center,header.v24-s .hd-center>div:first-child{display:flex!important;flex:1;max-width:none!important}'+
+  'header.v24-s #v24SX{display:flex}'+
+  '#v24Drop{top:calc(100% + 2px);right:8px;left:8px}'+
+  '}';
+  document.head.appendChild(st);
+  var $=function(i){return document.getElementById(i)};
+  var PR='<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><rect x="6" y="14" width="12" height="7" rx="1"/><path d="M6 17H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/></svg>';
+  var SE='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>';
+  var sel=0,hits=0;
+  function closeAll(){var m=$('v24PrMenu'),d=$('v24Drop');if(m)m.classList.remove('open');if(d)d.classList.remove('open')}
+  function setup(){
+    var host=$('hdActions'),h=document.querySelector('header.hd-ready'),gi=$('globalSearchInput');
+    if(!host||!h||!gi)return false;
+    if($('v24Pr'))return true;
+    /* 1) زر الطابعة على يسار الجرس */
+    var w=document.createElement('span');w.id='v24Pr';
+    w.innerHTML='<button type="button" id="v24PrBtn" aria-label="طباعة / تقرير" title="طباعة / تقرير">'+PR+'</button><div id="v24PrMenu"><button type="button" data-a="p">🖨 طباعة الصفحة / حفظ PDF</button><button type="button" data-a="r">📄 تقرير المهندس (PDF)</button></div>';
+    var bell=$('v10Bell'),bw=bell&&bell.parentNode&&bell.parentNode!==host?bell.parentNode:bell;
+    if(bw&&bw.parentNode===host)bw.after(w);else host.appendChild(w);
+    $('v24PrBtn').onclick=function(e){e.stopPropagation();var d=$('v24Drop');if(d)d.classList.remove('open');$('v24PrMenu').classList.toggle('open')};
+    $('v24PrMenu').onclick=function(e){var b=e.target.closest('button');if(!b)return;$('v24PrMenu').classList.remove('open');try{if(b.getAttribute('data-a')==='p')v18PrintPage();else v19Open()}catch(x){console.error(x)}};
+    /* 2) البحث داخل الشريط: نستبدل الحقل لإلغاء فتح النافذة */
+    var ni=gi.cloneNode(true);ni.removeAttribute('onkeyup');ni.removeAttribute('onfocus');ni.value='';ni.setAttribute('autocomplete','off');ni.setAttribute('placeholder','بحث سريع في النظام...');
+    gi.parentNode.replaceChild(ni,gi);
+    var center=ni.closest('.hd-center')||ni.parentNode;
+    var drop=document.createElement('div');drop.id='v24Drop';
+    var res=document.createElement('div');res.id='v18Res';drop.appendChild(res);center.appendChild(drop);
+    var x=document.createElement('button');x.type='button';x.id='v24SX';x.setAttribute('aria-label','إغلاق البحث');x.textContent='✕';center.appendChild(x);
+    var sb=document.createElement('button');sb.type='button';sb.id='v24SBtn';sb.setAttribute('aria-label','بحث');sb.title='بحث';sb.innerHTML=SE;
+    host.insertBefore(sb,host.firstChild);
+    var fresh=false,busy=false;
+    function refreshIndex(){ if(fresh)return; fresh=true; busy=true; try{ var o=window.__v24OrigOpen; if(o){o(''); if(typeof v5CloseSub==='function')v5CloseSub(); var v=ni.value; ni.focus(); try{ni.setSelectionRange(v.length,v.length)}catch(e){} } }catch(e){} busy=false; }
+    function run(){ var q=ni.value; if(!q.trim()){ drop.classList.remove('open'); return; } refreshIndex(); v18SearchRun(q); sel=0; hits=res.querySelectorAll('.v18-sr').length; drop.classList.add('open'); }
+    ni.addEventListener('focus',function(){if(busy)return;fresh=false;$('v24PrMenu').classList.remove('open'); if(ni.value.trim())run();});
+    ni.addEventListener('input',run);
+    ni.addEventListener('keydown',function(ev){
+      if(ev.key==='Escape'){ni.value='';closeAll();ni.blur();h.classList.remove('v24-s');return}
+      if(ev.key==='Enter'){ev.preventDefault();if(hits){var i=sel;closeAll();ni.value='';h.classList.remove('v24-s');v18SearchGo(i)}return}
+      if(ev.key==='ArrowDown'||ev.key==='ArrowUp'){ev.preventDefault();if(!hits)return;sel=Math.max(0,Math.min(hits-1,sel+(ev.key==='ArrowDown'?1:-1)));var rs=res.querySelectorAll('.v18-sr');rs.forEach(function(e,i){e.classList.toggle('on',i===sel)});if(rs[sel])rs[sel].scrollIntoView({block:'nearest'})}
+    });
+    /* اختيار نتيجة بالضغط: نقفل القائمة ونفرّغ الحقل بعد التنفيذ */
+    res.addEventListener('click',function(){setTimeout(function(){closeAll();ni.value='';h.classList.remove('v24-s')},0)},true);
+    sb.onclick=function(e){e.stopPropagation();h.classList.add('v24-s');setTimeout(function(){ni.focus()},30)};
+    x.onclick=function(e){e.stopPropagation();ni.value='';closeAll();h.classList.remove('v24-s')};
+    document.addEventListener('click',function(e){var m=$('v24PrMenu'),d=$('v24Drop');if(m&&!m.parentNode.contains(e.target))m.classList.remove('open');if(d&&!center.contains(e.target))d.classList.remove('open')});
+    /* Ctrl+K و v18OpenSearch يركّزوا على الحقل بدل فتح نافذة */
+    window.v18OpenSearch=function(seed){h.classList.add('v24-s');ni.value=seed||'';setTimeout(function(){ni.focus();if(ni.value)run()},30)};
+    window.handleGlobalSearch=function(v){window.v18OpenSearch(v)};
+    return true;
+  }
+  /* نحفظ الدالة الأصلية قبل أي استبدال لاستخدامها في تحديث فهرس البحث فقط */
+  window.__v24OrigOpen=window.v18OpenSearch;
+  var t=0,iv=setInterval(function(){t++;try{if(setup()||t>120)clearInterval(iv)}catch(e){clearInterval(iv)}},250);
+  }catch(e){}
+})();
 
 ;(function(){try{if('serviceWorker' in navigator&&location.protocol==='https:')window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){})});}catch(e){}})();
 </script>
